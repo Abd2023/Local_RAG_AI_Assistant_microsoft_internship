@@ -7,10 +7,9 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Protocol, Sequence
 
 from src import config
-from src.ingest import DocumentChunk
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -36,6 +35,14 @@ class StoredChunk:
     created_at: str
 
 
+class ChunkLike(Protocol):
+    """Minimal chunk shape accepted by storage helpers."""
+
+    source_name: str
+    chunk_index: int
+    content: str
+
+
 def connect(db_path: Path = config.DATABASE_PATH) -> sqlite3.Connection:
     """Open a SQLite connection, creating the data directory if needed."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,7 +65,7 @@ def clear_chunks(connection: sqlite3.Connection) -> None:
 
 def insert_chunk(
     connection: sqlite3.Connection,
-    chunk: DocumentChunk,
+    chunk: ChunkLike,
     embedding: Sequence[float],
 ) -> int:
     """Insert one chunk and its embedding vector."""
@@ -81,7 +88,7 @@ def insert_chunk(
 
 
 def rebuild_chunks(
-    chunk_embeddings: Iterable[tuple[DocumentChunk, Sequence[float]]],
+    chunk_embeddings: Iterable[tuple[ChunkLike, Sequence[float]]],
     db_path: Path = config.DATABASE_PATH,
 ) -> int:
     """Create the table, clear old rows, and insert chunk/embedding pairs."""

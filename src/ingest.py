@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src import config
+from src.foundry_client import generate_embeddings
+from src.storage import count_chunks, rebuild_chunks
 
 SUPPORTED_EXTENSIONS = {".md", ".txt"}
 MAX_CHUNK_WORDS = int(config.CHUNK_TARGET_WORDS * 1.4)
@@ -154,20 +156,58 @@ def load_document_chunks(docs_path: Path = config.SAMPLE_DOCS_PATH) -> list[Docu
     return chunks
 
 
-def main() -> None:
-    """Print a chunking summary for the configured sample documents."""
-    chunks = load_document_chunks()
+def build_chunk_embeddings(chunks: list[DocumentChunk]) -> list[tuple[DocumentChunk, list[float]]]:
+    """Generate embeddings for chunks and pair each vector with its source chunk."""
+    texts = [chunk.content for chunk in chunks]
+    embeddings = generate_embeddings(texts)
+    return list(zip(chunks, embeddings, strict=True))
+
+
+def ingest_sample_documents() -> dict[str, int]:
+    """Load sample docs, embed chunks, and rebuild the local SQLite database."""
+    files = iter_text_files(config.SAMPLE_DOCS_PATH)
+    chunks = load_document_chunks(config.SAMPLE_DOCS_PATH)
     if not chunks:
-        print(f"No chunks found in {config.SAMPLE_DOCS_PATH}")
+        return {
+            "files": len(files),
+            "chunks": 0,
+            "stored_rows": 0,
+        }
+
+    chunk_embeddings = build_chunk_embeddings(chunks)
+    stored_rows = rebuild_chunks(chunk_embeddings)
+    return {
+        "files": len(files),
+        "chunks": len(chunks),
+        "stored_rows": stored_rows,
+    }
+
+
+def main() -> None:
+    """Build the local SQLite knowledge base from sample documents."""
+    files = iter_text_files(config.SAMPLE_DOCS_PATH)
+    chunks = load_document_chunks()
+    if not files:
+        print(f"No supported .md or .txt files found in {config.SAMPLE_DOCS_PATH}")
+        return
+    if not chunks:
+        print(f"No non-empty chunks found in {config.SAMPLE_DOCS_PATH}")
         return
 
-    print(f"Loaded {len(chunks)} chunks from {config.SAMPLE_DOCS_PATH}")
+    print(f"Found {len(files)} supported files in {config.SAMPLE_DOCS_PATH}")
+    print(f"Prepared {len(chunks)} chunks for embedding")
     for chunk in chunks:
         preview = chunk.content.replace("\n", " ")[:90]
         print(
             f"{chunk.source_name}#{chunk.chunk_index} "
             f"({count_words(chunk.content)} words): {preview}"
         )
+
+    chunk_embeddings = build_chunk_embeddings(chunks)
+    stored_rows = rebuild_chunks(chunk_embeddings)
+    final_row_count = count_chunks()
+    print(f"Stored {stored_rows} chunks in {config.DATABASE_PATH}")
+    print(f"Database row count after rebuild: {final_row_count}")
 
 
 if __name__ == "__main__":
