@@ -1,4 +1,4 @@
-"""Foundry Local SDK helpers for local chat inference."""
+"""Foundry Local SDK helpers for local chat and embedding inference."""
 
 from __future__ import annotations
 
@@ -44,6 +44,15 @@ def get_chat_model(model_alias: str = config.CHAT_MODEL_ALIAS) -> IModel:
     return model
 
 
+def get_embedding_model(model_alias: str = config.EMBEDDING_MODEL_ALIAS) -> IModel:
+    """Return the configured embedding model from the Foundry Local catalog."""
+    manager = get_manager()
+    model = manager.catalog.get_model(model_alias)
+    if model is None:
+        raise FoundryLocalException(f"Embedding model alias not found in Foundry Local catalog: {model_alias}")
+    return model
+
+
 def load_chat_model(
     model_alias: str = config.CHAT_MODEL_ALIAS,
     progress_callback: ProgressCallback | None = None,
@@ -54,6 +63,23 @@ def load_chat_model(
         download_and_register_execution_providers()
 
     model = get_chat_model(model_alias)
+    if not model.is_cached:
+        model.download(progress_callback=progress_callback)
+    if not model.is_loaded:
+        model.load()
+    return model
+
+
+def load_embedding_model(
+    model_alias: str = config.EMBEDDING_MODEL_ALIAS,
+    progress_callback: ProgressCallback | None = None,
+    register_execution_providers: bool = False,
+) -> IModel:
+    """Download and load the configured embedding model for local inference."""
+    if register_execution_providers:
+        download_and_register_execution_providers()
+
+    model = get_embedding_model(model_alias)
     if not model.is_cached:
         model.download(progress_callback=progress_callback)
     if not model.is_loaded:
@@ -84,6 +110,30 @@ def complete_chat_prompt(
     )
 
     return completion.choices[0].message.content or ""
+
+
+def generate_embedding(
+    text: str,
+    model_alias: str = config.EMBEDDING_MODEL_ALIAS,
+    register_execution_providers: bool = False,
+) -> list[float]:
+    """Generate one local embedding vector for a single text string."""
+    model = load_embedding_model(model_alias, register_execution_providers=register_execution_providers)
+    embedding_client = model.get_embedding_client()
+    response = embedding_client.generate_embedding(text)
+    return list(response.data[0].embedding)
+
+
+def generate_embeddings(
+    texts: list[str],
+    model_alias: str = config.EMBEDDING_MODEL_ALIAS,
+    register_execution_providers: bool = False,
+) -> list[list[float]]:
+    """Generate local embedding vectors for multiple text strings."""
+    model = load_embedding_model(model_alias, register_execution_providers=register_execution_providers)
+    embedding_client = model.get_embedding_client()
+    response = embedding_client.generate_embeddings(texts)
+    return [list(item.embedding) for item in response.data]
 
 
 if __name__ == "__main__":
