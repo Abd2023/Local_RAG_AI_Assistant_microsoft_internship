@@ -92,7 +92,8 @@ def rebuild_chunks(
     db_path: Path = config.DATABASE_PATH,
 ) -> int:
     """Create the table, clear old rows, and insert chunk/embedding pairs."""
-    with connect(db_path) as connection:
+    connection = connect(db_path)
+    try:
         create_chunks_table(connection)
         connection.execute("DELETE FROM chunks")
         row_count = 0
@@ -101,11 +102,14 @@ def rebuild_chunks(
             row_count += 1
         connection.commit()
         return row_count
+    finally:
+        connection.close()
 
 
 def fetch_all_chunks(db_path: Path = config.DATABASE_PATH) -> list[StoredChunk]:
     """Read all stored chunks back with embeddings decoded from JSON."""
-    with connect(db_path) as connection:
+    connection = connect(db_path)
+    try:
         create_chunks_table(connection)
         rows = connection.execute(
             """
@@ -114,6 +118,8 @@ def fetch_all_chunks(db_path: Path = config.DATABASE_PATH) -> list[StoredChunk]:
             ORDER BY source_name, chunk_index, id
             """
         ).fetchall()
+    finally:
+        connection.close()
 
     return [
         StoredChunk(
@@ -130,7 +136,10 @@ def fetch_all_chunks(db_path: Path = config.DATABASE_PATH) -> list[StoredChunk]:
 
 def count_chunks(db_path: Path = config.DATABASE_PATH) -> int:
     """Return the number of chunk rows in the database."""
-    with connect(db_path) as connection:
+    connection = connect(db_path)
+    try:
         create_chunks_table(connection)
         row = connection.execute("SELECT COUNT(*) AS count FROM chunks").fetchone()
+    finally:
+        connection.close()
     return int(row["count"])
