@@ -1,0 +1,2 @@
+"""Foundry Local client placeholder."""
+

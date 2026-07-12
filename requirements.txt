@@ -1,0 +1,5 @@
+foundry-local-sdk-winml
+openai
+numpy
+pytest
+rich
