@@ -1,2 +1,90 @@
-"""Foundry Local client placeholder."""
+"""Foundry Local SDK helpers for local chat inference."""
 
+from __future__ import annotations
+
+import platform
+from typing import Callable
+
+from foundry_local_sdk import Configuration, FoundryLocalManager
+from foundry_local_sdk.exception import FoundryLocalException
+from foundry_local_sdk.imodel import IModel
+
+from src import config
+
+ProgressCallback = Callable[[float], None]
+ExecutionProviderProgressCallback = Callable[[str, float], None]
+
+_APP_NAME = "Local_RAG_AI_Assistant"
+
+
+def get_manager() -> FoundryLocalManager:
+    """Initialize and return the Foundry Local singleton manager."""
+    if FoundryLocalManager.instance is None:
+        FoundryLocalManager.initialize(Configuration(app_name=_APP_NAME))
+    return FoundryLocalManager.instance
+
+
+def download_and_register_execution_providers(
+    progress_callback: ExecutionProviderProgressCallback | None = None,
+) -> object | None:
+    """Download/register Windows execution providers when running on Windows."""
+    if platform.system() != "Windows":
+        return None
+
+    manager = get_manager()
+    return manager.download_and_register_eps(progress_callback=progress_callback)
+
+
+def get_chat_model(model_alias: str = config.CHAT_MODEL_ALIAS) -> IModel:
+    """Return the configured chat model from the Foundry Local catalog."""
+    manager = get_manager()
+    model = manager.catalog.get_model(model_alias)
+    if model is None:
+        raise FoundryLocalException(f"Chat model alias not found in Foundry Local catalog: {model_alias}")
+    return model
+
+
+def load_chat_model(
+    model_alias: str = config.CHAT_MODEL_ALIAS,
+    progress_callback: ProgressCallback | None = None,
+    register_execution_providers: bool = False,
+) -> IModel:
+    """Download and load the configured chat model for local inference."""
+    if register_execution_providers:
+        download_and_register_execution_providers()
+
+    model = get_chat_model(model_alias)
+    if not model.is_cached:
+        model.download(progress_callback=progress_callback)
+    if not model.is_loaded:
+        model.load()
+    return model
+
+
+def complete_chat_prompt(
+    prompt: str,
+    model_alias: str = config.CHAT_MODEL_ALIAS,
+    max_tokens: int = 80,
+    temperature: float = 0.2,
+    register_execution_providers: bool = False,
+) -> str:
+    """Send one user prompt to the local chat model and return the response text."""
+    model = load_chat_model(model_alias, register_execution_providers=register_execution_providers)
+    chat_client = model.get_chat_client()
+    chat_client.settings.max_tokens = max_tokens
+    chat_client.settings.temperature = temperature
+
+    completion = chat_client.complete_chat(
+        [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ]
+    )
+
+    return completion.choices[0].message.content or ""
+
+
+if __name__ == "__main__":
+    print(complete_chat_prompt("Say hello in one sentence."))
