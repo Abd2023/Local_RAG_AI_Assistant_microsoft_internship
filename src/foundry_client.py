@@ -178,6 +178,28 @@ def complete_chat_prompt(
     return completion.choices[0].message.content or ""
 
 
+def complete_chat_messages(
+    messages: list[dict[str, str]],
+    model_alias: str = config.CHAT_MODEL_ALIAS,
+    max_tokens: int = 250,
+    temperature: float = 0.1,
+    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+) -> str:
+    """Send chat messages to the local chat model and return the response text."""
+    model = load_chat_model(
+        model_alias,
+        register_execution_providers=register_execution_providers,
+        require_gpu=require_gpu,
+    )
+    chat_client = model.get_chat_client()
+    chat_client.settings.max_tokens = max_tokens
+    chat_client.settings.temperature = temperature
+
+    completion = chat_client.complete_chat(messages)
+    return completion.choices[0].message.content or ""
+
+
 def generate_embedding(
     text: str,
     model_alias: str = config.EMBEDDING_MODEL_ALIAS,
