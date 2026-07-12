@@ -77,7 +77,7 @@ def build_context_block(results: list[RetrievalResult], question: str = "") -> s
     """Build a labeled context block from retrieved chunks."""
     context_parts = []
     for result in results:
-        label = f"{result.source_name}#{result.chunk_index}"
+        label = _context_source_label(result)
         content = _relevant_snippet(question, result.content) if question else result.content
         context_parts.append(f"[Source: {label}]\n{content}")
     return "\n\n---\n\n".join(context_parts)
@@ -109,11 +109,24 @@ def _chunk_debug_info(results: list[RetrievalResult]) -> list[dict[str, object]]
             "chunk_id": result.chunk_id,
             "source_name": result.source_name,
             "chunk_index": result.chunk_index,
+            "chunk_number": result.chunk_index + 1,
             "similarity": result.similarity,
+            "similarity_percent": result.similarity * 100,
+            "source_label": _display_source_label(result),
             "preview": result.content.replace("\n", " ")[:240],
         }
         for result in results
     ]
+
+
+def _context_source_label(result: RetrievalResult) -> str:
+    """Return the compact source label used inside model context."""
+    return f"{result.source_name}#{result.chunk_index}"
+
+
+def _display_source_label(result: RetrievalResult) -> str:
+    """Return a human-readable source label for terminal/API output."""
+    return f"{result.source_name} (chunk {result.chunk_index + 1})"
 
 
 def _ensure_answer_has_sources(answer: str, sources: list[str]) -> str:
@@ -143,7 +156,7 @@ def answer_query(question: str) -> dict[str, object]:
         raise ValueError("Question must not be empty.")
 
     retrieved_chunks = retrieve_top_chunks(question, top_k=config.TOP_K)
-    sources = [f"{result.source_name}#{result.chunk_index}" for result in retrieved_chunks]
+    sources = [_display_source_label(result) for result in retrieved_chunks]
     no_answer = _low_confidence_answer(retrieved_chunks)
     if no_answer is not None:
         return {
@@ -183,7 +196,11 @@ def main() -> None:
         print(f"- {source}")
     print("Retrieved chunks:")
     for chunk in result["retrieved_chunks"]:
-        print(f"- {chunk['source_name']}#{chunk['chunk_index']} score={chunk['similarity']:.4f}")
+        print(
+            f"- {chunk['source_name']} "
+            f"(chunk {chunk['chunk_number']}, "
+            f"cosine similarity {chunk['similarity']:.3f} / {chunk['similarity_percent']:.1f}%)"
+        )
 
 
 if __name__ == "__main__":

@@ -15,11 +15,18 @@ def print_answer(result: dict[str, object]) -> None:
     print("\nAnswer:")
     print(answer)
 
-    sources = result.get("sources", [])
-    if sources:
+    retrieved_chunks = result.get("retrieved_chunks", [])
+    if retrieved_chunks:
         print("\nSources:")
-        for source in sources:
-            print(f"- {source}")
+        for chunk in retrieved_chunks:
+            source_name = chunk["source_name"]
+            chunk_number = chunk["chunk_number"]
+            similarity = chunk["similarity"]
+            similarity_percent = chunk["similarity_percent"]
+            print(
+                f"- {source_name} "
+                f"(chunk {chunk_number}, cosine similarity {similarity:.3f} / {similarity_percent:.1f}%)"
+            )
 
 
 def run_cli(input_func: Callable[[str], str] = input) -> None:
