@@ -29,6 +29,19 @@ STOP_WORDS = {
     "with",
 }
 
+CALENDAR_DATE_PATTERN = re.compile(
+    r"\b(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2}(?:,\s*\d{4})?\b"
+    r"|\b\d{4}-\d{2}-\d{2}\b"
+    r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    flags=re.IGNORECASE,
+)
+STREET_ADDRESS_PATTERN = re.compile(
+    r"\b\d{1,6}\s+[A-Za-z0-9 .'-]+"
+    r"(?:street|st\.|avenue|ave\.|road|rd\.|boulevard|blvd\.|lane|ln\.|drive|dr\.|court|ct\.)\b",
+    flags=re.IGNORECASE,
+)
+
 SYSTEM_INSTRUCTION = """You are a local document Q&A assistant. Answer only using the provided context.
 If the answer is not in the context, say you do not know based on the available documents.
 Be concise and include the source names you used."""
@@ -150,6 +163,53 @@ def _low_confidence_answer(results: list[RetrievalResult]) -> str | None:
     return None
 
 
+def _context_text(results: list[RetrievalResult]) -> str:
+    """Return all retrieved content as one text block for deterministic guards."""
+    return "\n\n".join(result.content for result in results)
+
+
+def _contains_role_identity(context: str, role: str) -> bool:
+    """Return whether context explicitly names a person for a role."""
+    proper_name = r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+"
+    role_pattern = re.escape(role)
+    return any(
+        re.search(pattern, context)
+        for pattern in (
+            rf"\b{role_pattern}\s+(?:is|was|:)\s+{proper_name}\b",
+            rf"\b{proper_name}\s+(?:is|was|serves as|acts as)\s+(?:the\s+)?{role_pattern}\b",
+        )
+    )
+
+
+def _missing_specific_detail_answer(
+    question: str,
+    results: list[RetrievalResult],
+) -> str | None:
+    """Refuse exact-detail questions when the retrieved context lacks that evidence."""
+    normalized_question = question.lower()
+    context = _context_text(results)
+
+    asks_for_calendar_date = (
+        "calendar date" in normalized_question
+        or ("exact" in normalized_question and "date" in normalized_question)
+    )
+    if asks_for_calendar_date and not CALENDAR_DATE_PATTERN.search(context):
+        return "I do not know based on the available documents."
+
+    asks_for_address = "address" in normalized_question
+    if asks_for_address and not STREET_ADDRESS_PATTERN.search(context):
+        return "I do not know based on the available documents."
+
+    asks_for_instructor_identity = (
+        normalized_question.strip().startswith("who ")
+        and "instructor" in normalized_question
+    )
+    if asks_for_instructor_identity and not _contains_role_identity(context, "instructor"):
+        return "I do not know based on the available documents."
+
+    return None
+
+
 def answer_query(question: str) -> dict[str, object]:
     """Answer a question using retrieved local document context."""
     if not question.strip():
@@ -157,7 +217,10 @@ def answer_query(question: str) -> dict[str, object]:
 
     retrieved_chunks = retrieve_top_chunks(question, top_k=config.TOP_K)
     sources = [_display_source_label(result) for result in retrieved_chunks]
-    no_answer = _low_confidence_answer(retrieved_chunks)
+    no_answer = _low_confidence_answer(retrieved_chunks) or _missing_specific_detail_answer(
+        question,
+        retrieved_chunks,
+    )
     if no_answer is not None:
         return {
             "answer": _ensure_answer_has_sources(no_answer, sources),
