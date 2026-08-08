@@ -105,9 +105,10 @@ Start the native service with `run.ps1 api`, then use:
 The Compose stack runs the backend with Ollama and Qdrant and serves the React interface at `http://localhost:3000`:
 
 ```powershell
-docker compose up --build
+docker compose up -d qdrant ollama
 docker compose exec ollama ollama pull qwen2.5:0.5b
 docker compose exec ollama ollama pull nomic-embed-text
+docker compose up --build -d backend frontend
 ```
 
 The first model pulls require internet access. After Docker images and model volumes are cached, normal querying runs locally without cloud inference. The backend rebuilds an empty Qdrant collection automatically on its first start.
