@@ -8,6 +8,8 @@ function App() {
   const [health, setHealth] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState("");
 
   useEffect(() => {
     fetch("/api/health")
@@ -40,6 +42,39 @@ function App() {
     }
   }
 
+  async function uploadDocument(event) {
+    const file = event.target.files?.[0];
+    if (!file || uploading) return;
+
+    setUploading(true);
+    setError("");
+    setUploadMessage("");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "The document upload failed.");
+      }
+
+      const index = payload.index || {};
+      setUploadMessage(
+        `${payload.document_name} is ready: ${index.chunks ?? 0} chunks indexed.`,
+      );
+      const healthResponse = await fetch("/api/health");
+      if (healthResponse.ok) setHealth(await healthResponse.json());
+    } catch (caught) {
+      setError(caught.message);
+    } finally {
+      setUploading(false);
+      event.target.value = "";
+    }
+  }
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -68,6 +103,18 @@ function App() {
             <button type="submit" disabled={!question.trim() || loading}>
               {loading ? "Searching..." : "Ask"}
             </button>
+          </div>
+          <div className="upload-section">
+            <label htmlFor="document-upload">Add a document</label>
+            <input
+              id="document-upload"
+              type="file"
+              accept=".md,.txt,.pdf,.docx"
+              onChange={uploadDocument}
+              disabled={uploading}
+            />
+            {uploading && <small>Extracting, embedding, and indexing...</small>}
+            {uploadMessage && <small className="success-text">{uploadMessage}</small>}
           </div>
         </form>
 

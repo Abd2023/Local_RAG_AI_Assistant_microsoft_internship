@@ -1,6 +1,6 @@
 ﻿from pathlib import Path
 
-from src.ingest import ingest_documents
+from src.ingest import add_document_file, ingest_documents
 from src.storage import count_chunks, fetch_all_chunks
 from src.vector_store import count_vectors
 
@@ -41,3 +41,26 @@ def test_incremental_indexing_skips_updates_and_handles_changes(
     assert fourth["removed_files"] == 1
     assert len(embedding_calls) == 2
     assert "11:00 AM" in rows_after_change[0].content
+
+
+def test_add_document_file_copies_external_document_and_indexes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "incoming" / "research.pdf"
+    source.parent.mkdir()
+    source.write_bytes(b"pdf bytes")
+    docs_path = tmp_path / "knowledge"
+    calls: list[Path] = []
+
+    def fake_ingest(path: Path) -> dict[str, int]:
+        calls.append(path)
+        return {"files": 1, "indexed_files": 1}
+
+    monkeypatch.setattr("src.ingest.ingest_documents", fake_ingest)
+
+    result = add_document_file(source, docs_path)
+
+    assert result["document_name"] == "research.pdf"
+    assert (docs_path / "research.pdf").read_bytes() == b"pdf bytes"
+    assert calls == [docs_path.resolve()]

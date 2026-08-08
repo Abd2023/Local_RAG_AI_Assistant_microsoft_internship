@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("setup", "ingest", "rebuild", "cli", "ask", "eval", "traces", "api", "test", "status", "help")]
+    [ValidateSet("setup", "ingest", "rebuild", "upload", "cli", "ask", "eval", "traces", "api", "test", "status", "help")]
     [string]$Command = "cli",
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
@@ -25,6 +25,7 @@ function Show-Help {
     Write-Host "  .\run.ps1 setup"
     Write-Host "  .\run.ps1 ingest"
     Write-Host "  .\run.ps1 rebuild"
+    Write-Host "  .\run.ps1 upload ""C:\path\to\document.pdf"""
     Write-Host "  .\run.ps1 cli"
     Write-Host "  .\run.ps1 ask ""What time does the daily standup start?"""
     Write-Host "  .\run.ps1 eval"
@@ -37,6 +38,7 @@ function Show-Help {
     Write-Host "  setup  creates .venv if needed and installs requirements."
     Write-Host "  ingest  incrementally updates data\rag.db and data\lancedb."
     Write-Host "  rebuild fully rebuilds metadata and vectors."
+    Write-Host "  upload  copies one supported document and indexes it immediately."
     Write-Host "  cli     starts the interactive Q&A assistant."
     Write-Host "  ask     runs one question and exits."
     Write-Host "  eval    runs the manual evaluation questions and saves a JSON report."
@@ -102,6 +104,16 @@ switch ($Command) {
         Write-Host "Fully rebuilding the local knowledge base..."
         Write-Host "Foundry Local may download or load the embedding model on first run."
         Invoke-ProjectPython @("-B", "-m", "src.ingest", "--rebuild")
+    }
+    "upload" {
+        $DocumentPath = ($RemainingArgs -join " ").Trim()
+        if (-not $DocumentPath) {
+            throw "Missing document path. Example: .\run.ps1 upload ""C:\path\to\document.pdf"""
+        }
+
+        Write-Host "Adding and indexing $DocumentPath..."
+        Write-Host "Foundry Local may download or load the embedding model on first run."
+        Invoke-ProjectPython @("-B", "-m", "src.ingest", $DocumentPath)
     }
     "cli" {
         Write-Host "Starting the Local RAG AI Assistant..."

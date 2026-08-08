@@ -36,6 +36,15 @@ Ask one question without starting the interactive CLI:
 .\run.ps1 ask "What time does the daily standup start?"
 ```
 
+Add a new local document and index it immediately:
+
+```powershell
+.\run.ps1 upload "C:\path\to\your-document.pdf"
+.\run.ps1 ask "What is this document about?"
+```
+
+Uploads support `.md`, `.txt`, `.pdf`, and `.docx`. The file is copied into `data\sample_docs`, then the normal incremental pipeline extracts text, runs OCR when required, chunks the content, creates embeddings, updates the vector store, and records metadata. Re-uploading the same filename only re-indexes it when its contents changed.
+
 Run tests:
 
 ```powershell
@@ -60,6 +69,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1 cli
 - `.\\run.ps1 setup`: create `.venv` if needed and install dependencies.
 - `.\\run.ps1 ingest`: incrementally update changed documents.
 - `.\\run.ps1 rebuild`: fully rebuild SQLite metadata and LanceDB vectors.
+- `.\\run.ps1 upload "path"`: copy one supported document into the knowledge base and index it immediately.
 - `.\\run.ps1 cli`: start the interactive assistant.
 - `.\\run.ps1 ask "question"`: ask one question and exit.
 - `.\\run.ps1 eval`: run the 10-question evaluation suite.
@@ -98,6 +108,7 @@ Start the native service with `run.ps1 api`, then use:
 - `GET http://localhost:8000/api/health`
 - `POST http://localhost:8000/api/query` with `{ "question": "..." }`
 - `POST http://localhost:8000/api/ingest`
+- `POST http://localhost:8000/api/upload` as multipart form data with field name `file`
 - `GET http://localhost:8000/api/traces/{trace_id}`
 
 ## Docker Compose

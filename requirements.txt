@@ -7,6 +7,7 @@ lancedb
 pymupdf
 python-docx
 fastapi
+python-multipart
 uvicorn[standard]
 qdrant-client
 sentence-transformers

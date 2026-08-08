@@ -26,6 +26,10 @@ label { display: block; font-size: 14px; font-weight: 700; margin-bottom: 12px; 
 textarea { background: #f8faf9; border: 1px solid #cbd6d9; border-radius: 6px; color: #15202b; min-height: 150px; padding: 14px; resize: vertical; width: 100%; }
 textarea:focus { border-color: #176b73; outline: 3px solid rgba(23, 107, 115, 0.15); }
 .form-footer { align-items: center; color: #6b7b83; display: flex; font-size: 12px; justify-content: space-between; gap: 12px; margin-top: 16px; }
+.upload-section { border-top: 1px solid #dce3e5; display: grid; gap: 8px; margin-top: 22px; padding-top: 20px; }
+input[type="file"] { color: #40515a; font-size: 12px; max-width: 100%; }
+.upload-section small { color: #718087; font-size: 11px; }
+.upload-section .success-text { color: #17633f; }
 button { background: #176b73; border: 0; border-radius: 5px; color: #fff; cursor: pointer; font-weight: 700; padding: 11px 18px; }
 button:disabled { background: #9aa9ad; cursor: not-allowed; }
 .answer-heading, .source-topline { align-items: center; display: flex; gap: 12px; justify-content: space-between; }

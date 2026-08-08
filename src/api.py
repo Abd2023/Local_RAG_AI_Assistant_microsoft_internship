@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 from src import config
-from src.ingest import ingest_documents
+from src.ingest import document_path_for_name, ingest_documents
 from src.rag import answer_query
 from src.storage import count_chunks
 from src.traces import load_trace_records
@@ -102,6 +103,55 @@ def ingest(request: IngestRequest) -> dict[str, object]:
         return ingest_documents(documents_path, rebuild=request.rebuild)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...)) -> dict[str, object]:
+    """Store one document and immediately run incremental indexing."""
+    try:
+        destination = document_path_for_name(file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temporary_path: Path | None = None
+    size_bytes = 0
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{destination.name}.",
+            suffix=".uploading",
+            dir=destination.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            while chunk := await file.read(1024 * 1024):
+                size_bytes += len(chunk)
+                if size_bytes > config.MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Document exceeds the {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
+                    )
+                temporary.write(chunk)
+
+        if size_bytes == 0:
+            raise HTTPException(status_code=400, detail="Uploaded document is empty.")
+
+        temporary_path.replace(destination)
+        temporary_path = None
+        summary = ingest_documents(destination.parent)
+        return {
+            "document_name": destination.name,
+            "document_path": str(destination),
+            "index": summary,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        await file.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 @app.get("/api/traces/{trace_id}")

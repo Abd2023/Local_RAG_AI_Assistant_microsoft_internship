@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from src import config
 from src.document_loaders import (
     LoadedTextBlock,
+    SUPPORTED_EXTENSIONS,
     iter_supported_files,
     load_document,
 )
@@ -437,13 +439,61 @@ def ingest_sample_documents() -> dict[str, int]:
     return ingest_documents(config.SAMPLE_DOCS_PATH)
 
 
+def document_path_for_name(
+    filename: str,
+    docs_path: Path | None = None,
+) -> Path:
+    """Return a safe destination for an uploaded supported document."""
+    raw_name = str(filename or "").replace("\\", "/")
+    safe_name = Path(raw_name).name
+    if not safe_name or safe_name in {".", ".."}:
+        raise ValueError("A document filename is required.")
+    if Path(safe_name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise ValueError(f"Unsupported document type. Supported extensions: {supported}.")
+
+    destination_dir = (docs_path or config.SAMPLE_DOCS_PATH).resolve()
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    return destination_dir / safe_name
+
+
+def add_document_file(
+    source_path: Path,
+    docs_path: Path | None = None,
+) -> dict[str, int | str]:
+    """Copy one local document into the knowledge base and index it incrementally."""
+    source = Path(source_path).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"Document does not exist: {source}")
+
+    destination = document_path_for_name(source.name, docs_path)
+    if source != destination:
+        shutil.copy2(source, destination)
+
+    summary = ingest_documents(destination.parent)
+    return {
+        "document_name": destination.name,
+        "document_path": str(destination),
+        **summary,
+    }
+
+
 def main() -> None:
     """Build or update the local knowledge base from sample documents."""
     parser = argparse.ArgumentParser(description="Index local documents for RAG retrieval.")
+    parser.add_argument(
+        "document",
+        nargs="?",
+        help="Copy one local document into the knowledge base before indexing it.",
+    )
     parser.add_argument("--rebuild", action="store_true", help="Rebuild all metadata and vectors.")
     args = parser.parse_args()
 
-    summary = ingest_documents(rebuild=args.rebuild)
+    if args.document:
+        summary = add_document_file(Path(args.document))
+        print(f"Added document: {summary['document_name']}")
+    else:
+        summary = ingest_documents(rebuild=args.rebuild)
     print(f"Found {summary['files']} supported files in {config.SAMPLE_DOCS_PATH}")
     print(f"Indexed files: {summary['indexed_files']}")
     print(f"Skipped unchanged files: {summary['skipped_files']}")
