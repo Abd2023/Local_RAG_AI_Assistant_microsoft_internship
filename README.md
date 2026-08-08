@@ -128,7 +128,7 @@ The first model pulls require internet access. After Docker images and model vol
 
 PDF text extraction uses PyMuPDF. OCR is only attempted for sparse PDF pages that appear scanned and contain images.
 
-OCR requires a separate Tesseract installation on Windows. If scanned PDFs need OCR, install Tesseract and set `TESSDATA_PREFIX` so PyMuPDF can find tessdata. Normal text PDFs do not need OCR.
+OCR requires a separate Tesseract installation on Windows. If scanned PDFs need OCR, install Tesseract and set `TESSDATA_PREFIX` so PyMuPDF can find tessdata. The Docker backend image includes English Tesseract OCR. Normal text PDFs do not need OCR.
 
 ## Generated Local Data
 
