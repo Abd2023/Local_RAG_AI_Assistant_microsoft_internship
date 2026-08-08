@@ -1,12 +1,9 @@
-foundry-local-sdk-winml
 openai
 numpy
-pytest
-rich
-lancedb
-pymupdf
-python-docx
 fastapi
 uvicorn[standard]
 qdrant-client
 sentence-transformers
+lancedb
+pymupdf
+python-docx

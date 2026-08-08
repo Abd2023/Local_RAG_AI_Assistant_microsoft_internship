@@ -140,7 +140,11 @@ def test_answer_query_allows_explicit_exact_details(
         make_result("handbook.md", 0, "The final demo date is July 31, 2026.")
     ]
     monkeypatch.setattr(rag, "retrieve_top_chunks", lambda *_args, **_kwargs: results)
-    monkeypatch.setattr(rag, "complete_chat_messages", lambda _messages: "The final demo date is July 31, 2026.")
+    monkeypatch.setattr(
+        rag,
+        "complete_chat_messages",
+        lambda _messages: "The final demo date is July 31, 2026. [handbook.md#0]",
+    )
 
     response = rag.answer_query("What exact calendar date is the final demo?")
 
@@ -162,7 +166,7 @@ def test_answer_query_builds_messages_and_canonicalizes_sources(
 
     def fake_complete_chat_messages(messages: list[dict[str, str]]) -> str:
         captured_messages.extend(messages)
-        return "The final demo begins at 2 PM.\n\nSources: invented.md#99"
+        return "The final demo begins at 2 PM. [schedule.md#1]\n\nSources: invented.md#99"
 
     monkeypatch.setattr(rag, "complete_chat_messages", fake_complete_chat_messages)
 
@@ -174,10 +178,30 @@ def test_answer_query_builds_messages_and_canonicalizes_sources(
     }
     assert "[Source: schedule.md#1]" in captured_messages[1]["content"]
     assert response["answer"] == (
-        "The final demo begins at 2 PM."
+        "The final demo begins at 2 PM. [schedule.md#1]"
         "\n\nSources: schedule.md (chunk 2)"
     )
     assert response["sources"] == ["schedule.md (chunk 2)"]
+
+
+def test_answer_query_uses_grounded_fallback_when_model_omits_citations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = [
+        make_result(
+            "schedule.md",
+            0,
+            "The daily standup starts at 10 AM. Lunch starts at noon.",
+        )
+    ]
+    monkeypatch.setattr(rag, "retrieve_top_chunks", lambda *_args, **_kwargs: results)
+    monkeypatch.setattr(rag, "complete_chat_messages", lambda _messages: "The standup is at 10 AM.")
+
+    response = rag.answer_query("When does the daily standup start?")
+
+    assert response["citation_repair_applied"] is True
+    assert response["verification"]["verified"] is True
+    assert "The daily standup starts at 10 AM. [schedule.md#0]" in response["answer"]
 
 
 def test_answer_query_rejects_empty_question() -> None:

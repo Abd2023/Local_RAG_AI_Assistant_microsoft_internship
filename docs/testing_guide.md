@@ -7,18 +7,18 @@ This project is a local Retrieval-Augmented Generation assistant. It answers que
 The pipeline is:
 
 ```text
-sample docs -> chunks -> local embeddings -> SQLite -> query embedding -> cosine search -> context prompt -> local chat model -> answer with sources
+sample docs -> loaders -> chunks -> local embeddings -> SQLite metadata + LanceDB vectors -> query embedding -> vector search -> context prompt -> local chat model -> answer with sources + trace_id
 ```
 
 In normal use:
 
 1. Ingestion reads Markdown/text files from `data/sample_docs`.
 2. The embedding model turns each chunk into a vector.
-3. SQLite stores chunk text, source metadata, and embedding vectors.
+3. SQLite stores document/chunk metadata while LanceDB stores vectors.
 4. A user asks a question in the CLI.
-5. Retrieval embeds the question and ranks stored chunks by cosine similarity.
+5. Retrieval embeds the question and searches LanceDB for similar chunks.
 6. The chat model receives only the retrieved context and should answer from that context.
-7. The CLI prints the answer and retrieved sources.
+7. The CLI prints the answer, retrieved sources, and trace ID.
 
 ## Quick Commands
 
@@ -26,7 +26,7 @@ From the project root:
 
 ```powershell
 .\run.ps1 setup
-.\run.ps1 ingest
+.\run.ps1 rebuild
 .\run.ps1 cli
 ```
 
@@ -42,9 +42,11 @@ Run unit tests:
 .\run.ps1 test
 ```
 
-Check database status:
+Run evaluation, inspect traces, or check database status:
 
 ```powershell
+.\run.ps1 eval
+.\run.ps1 traces
 .\run.ps1 status
 ```
 
@@ -96,19 +98,19 @@ Use vague or edge-case questions:
 
 ### Ingestion
 
-- Loads all supported document types.
+- Loads supported `.md`, `.txt`, `.pdf`, and `.docx` document types.
 - Skips empty files cleanly.
 - Splits long documents into useful chunks.
 - Preserves `source_name`, `chunk_index`, and content for every chunk.
-- Re-running ingestion rebuilds the database without duplicate rows.
+- Incremental ingestion skips unchanged files, re-indexes changed files, and removes deleted files without duplicate rows.
 
 ### Retrieval
 
 - Converts the query into an embedding.
-- Ranks chunks by similarity in a deterministic way.
+- Searches LanceDB vectors and reports cosine-like similarity scores.
 - Retrieves the right source for direct factual questions.
 - Handles an empty database with a clear error.
-- Exposes retrieved sources and similarity scores for debugging.
+- Exposes retrieved sources, similarity scores, trace IDs, and timing records for debugging.
 
 ### Grounded Answering
 
@@ -154,3 +156,32 @@ An advanced version can usually:
 - Evaluate itself with automated metrics and saved golden questions.
 - Package the app with one-command setup and clear offline mode.
 - Provide observability: retrieval traces, latency, token counts, and failure categories.
+
+## Advanced Verification Commands
+
+Run the unit suite with:
+
+```powershell
+.\run.ps1 test
+```
+
+The reranker tests use an injected scorer and do not download model weights. A live reranker check requires the configured cross-encoder to be cached locally. The default settings retrieve 10 vector candidates and pass the best 3 to the chat model.
+
+For the HTTP service:
+
+```powershell
+.\run.ps1 api
+Invoke-RestMethod http://localhost:8000/api/health
+Invoke-RestMethod http://localhost:8000/api/query -Method Post -ContentType "application/json" -Body '{"question":"What time does the daily standup start?"}'
+```
+
+Each generated factual sentence must contain a citation matching a retrieved `source_name#chunk_index`. The API response exposes `verification`, `retrieved_chunks`, `reranker_status`, and `trace_id`.
+
+For the container stack:
+
+```powershell
+docker compose config
+docker compose up --build
+```
+
+Then verify `http://localhost:3000`, `http://localhost:8000/api/health`, and a query after pulling the two Ollama models into the persistent Ollama volume.

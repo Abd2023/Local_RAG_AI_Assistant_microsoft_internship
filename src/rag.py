@@ -6,8 +6,11 @@ import re
 import sys
 
 from src import config
+from src.citations import citation_key, verify_answer
 from src.foundry_client import complete_chat_messages
 from src.retrieval import RetrievalResult, retrieve_top_chunks
+from src.reranker import rerank_results
+from src.traces import TraceRecorder
 
 STOP_WORDS = {
     "about",
@@ -44,7 +47,10 @@ STREET_ADDRESS_PATTERN = re.compile(
 
 SYSTEM_INSTRUCTION = """You are a local document Q&A assistant. Answer only using the provided context.
 If the answer is not in the context, say you do not know based on the available documents.
-Be concise and include the source names you used."""
+Answer in one or two short sentences. Copy facts exactly as stated in the context; do not calculate, infer, repeat the question, or show reasoning.
+Every factual sentence must end with one or more exact bracketed labels copied from the context.
+Use only citation labels present in the context. Never invent a source label.
+Do not include a Sources section; the application adds canonical sources after verification."""
 
 
 def _keywords(text: str) -> set[str]:
@@ -103,8 +109,8 @@ def build_user_prompt(question: str, results: list[RetrievalResult]) -> str:
 If the answer is missing from the context, begin with: I do not know based on the available documents.
 Do not invent facts or source names.
 Return exactly two parts:
-Answer: one or two concise sentences that answer the question using only the context.
-Sources: source_name#chunk_index, source_name#chunk_index
+Answer: one or two short sentences copied from the context. Do not calculate or explain your reasoning. End every factual sentence with an exact bracketed label copied from the context.
+Sources: the application will add canonical source names after verification.
 
 Context:
 {context}
@@ -120,10 +126,19 @@ def _chunk_debug_info(results: list[RetrievalResult]) -> list[dict[str, object]]
     return [
         {
             "chunk_id": result.chunk_id,
+            "chunk_uid": result.chunk_uid,
+            "source_path": result.source_path,
             "source_name": result.source_name,
             "chunk_index": result.chunk_index,
             "chunk_number": result.chunk_index + 1,
+            "page_start": result.page_start,
+            "page_end": result.page_end,
+            "extraction_method": result.extraction_method,
+            "heading": result.heading,
             "similarity": result.similarity,
+            "vector_similarity": result.similarity,
+            "rerank_score": result.rerank_score,
+            "ranking_method": result.ranking_method,
             "similarity_percent": result.similarity * 100,
             "source_label": _display_source_label(result),
             "preview": result.content.replace("\n", " ")[:240],
@@ -132,14 +147,23 @@ def _chunk_debug_info(results: list[RetrievalResult]) -> list[dict[str, object]]
     ]
 
 
+def _page_label(result: RetrievalResult) -> str:
+    """Return a compact page label when page metadata is available."""
+    if result.page_start is None:
+        return ""
+    if result.page_end is None or result.page_end == result.page_start:
+        return f" page {result.page_start}"
+    return f" pages {result.page_start}-{result.page_end}"
+
+
 def _context_source_label(result: RetrievalResult) -> str:
     """Return the compact source label used inside model context."""
-    return f"{result.source_name}#{result.chunk_index}"
+    return citation_key(result.source_name, result.chunk_index)
 
 
 def _display_source_label(result: RetrievalResult) -> str:
     """Return a human-readable source label for terminal/API output."""
-    return f"{result.source_name} (chunk {result.chunk_index + 1})"
+    return f"{result.source_name}{_page_label(result)} (chunk {result.chunk_index + 1})"
 
 
 def _ensure_answer_has_sources(answer: str, sources: list[str]) -> str:
@@ -154,6 +178,22 @@ def _ensure_answer_has_sources(answer: str, sources: list[str]) -> str:
         return answer_without_sources
 
     return f"{answer_without_sources}\n\nSources: {', '.join(sources)}"
+
+
+def _citation_failure_answer() -> str:
+    """Return a safe response when the model output cannot be verified."""
+    return "I do not know based on the available documents."
+
+
+def _extractive_fallback(question: str, results: list[RetrievalResult]) -> str:
+    """Build a concise grounded answer when the small model breaks the citation contract."""
+    if not results:
+        return _citation_failure_answer()
+    result = results[0]
+    snippet = _relevant_snippet(question, result.content, max_sentences=2).strip()
+    citation = citation_key(result.source_name, result.chunk_index)
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", snippet) if part.strip()]
+    return " ".join(f"{sentence} [{citation}]" for sentence in sentences)
 
 
 def _low_confidence_answer(results: list[RetrievalResult]) -> str | None:
@@ -210,50 +250,160 @@ def _missing_specific_detail_answer(
     return None
 
 
-def answer_query(question: str) -> dict[str, object]:
+def _guard_decision(question: str, results: list[RetrievalResult]) -> tuple[str, str | None]:
+    """Return guard decision name and deterministic no-answer text if needed."""
+    low_confidence = _low_confidence_answer(results)
+    if low_confidence is not None:
+        return "low_confidence", low_confidence
+
+    missing_detail = _missing_specific_detail_answer(question, results)
+    if missing_detail is not None:
+        return "missing_exact_detail", missing_detail
+
+    return "normal_generation", None
+
+
+def answer_query(
+    question: str,
+    *,
+    trace_enabled: bool = True,
+    trace_dir: object | None = None,
+) -> dict[str, object]:
     """Answer a question using retrieved local document context."""
-    if not question.strip():
-        raise ValueError("Question must not be empty.")
-
-    retrieved_chunks = retrieve_top_chunks(question, top_k=config.TOP_K)
-    sources = [_display_source_label(result) for result in retrieved_chunks]
-    no_answer = _low_confidence_answer(retrieved_chunks) or _missing_specific_detail_answer(
-        question,
-        retrieved_chunks,
+    trace = TraceRecorder(
+        question=question,
+        traces_dir=trace_dir or config.TRACES_PATH,
+        enabled=trace_enabled,
     )
-    if no_answer is not None:
-        return {
-            "answer": _ensure_answer_has_sources(no_answer, sources),
-            "sources": sources,
-            "retrieved_chunks": _chunk_debug_info(retrieved_chunks),
+
+    if not question.strip():
+        exc = ValueError("Question must not be empty.")
+        setattr(exc, "trace_id", trace.trace_id)
+        trace.set("guard_decision", "exception")
+        trace.finish(status="error", error=exc)
+        raise exc
+
+    try:
+        with trace.span("retrieval_total"):
+            vector_candidates = retrieve_top_chunks(
+                question,
+                top_k=(
+                    config.RERANKER_CANDIDATE_K
+                    if config.RERANKER_ENABLED
+                    else config.TOP_K
+                ),
+                trace=trace,
+            )
+        trace.set("vector_candidates", _chunk_debug_info(vector_candidates))
+
+        with trace.span("reranking"):
+            retrieved_chunks, reranker_status = rerank_results(
+                question,
+                vector_candidates,
+                top_k=config.TOP_K,
+            )
+        trace.set("reranker_status", reranker_status)
+        sources = [_display_source_label(result) for result in retrieved_chunks]
+        retrieved_debug = _chunk_debug_info(retrieved_chunks)
+        trace.set("retrieved_sources", retrieved_debug)
+
+        guard_decision, no_answer = _guard_decision(question, retrieved_chunks)
+        trace.set("guard_decision", guard_decision)
+        if no_answer is not None:
+            final_answer = _ensure_answer_has_sources(no_answer, sources)
+            trace.update(
+                {
+                    "prompt_length": 0,
+                    "answer_length": len(final_answer),
+                    "sources": sources,
+                    "citation_verification": verify_answer(final_answer, []).as_dict(),
+                }
+            )
+            trace.finish(status="ok", answer=final_answer)
+            return {
+                "answer": final_answer,
+                "sources": sources,
+                "retrieved_chunks": retrieved_debug,
+                "verification": verify_answer(final_answer, []).as_dict(),
+                "reranker_status": reranker_status,
+                "trace_id": trace.trace_id,
+            }
+
+        with trace.span("prompt_build"):
+            user_prompt = build_user_prompt(question, retrieved_chunks)
+            messages = [
+                {
+                    "role": "system",
+                    "content": SYSTEM_INSTRUCTION,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
+            ]
+        trace.update(
+            {
+                "prompt_length": len(user_prompt),
+                "prompt_messages": messages,
+                "sources": sources,
+            }
+        )
+
+        with trace.span("chat_generation"):
+            answer = complete_chat_messages(messages)
+        trace.set("model_answer", answer)
+        allowed_citations = {
+            citation_key(result.source_name, result.chunk_index)
+            for result in retrieved_chunks
         }
+        normalized_answer = re.sub(
+            r"\[(?:source_name|filename)#(?:chunk_index|index)\]",
+            "",
+            answer,
+            flags=re.IGNORECASE,
+        )
+        verification = verify_answer(normalized_answer, allowed_citations)
+        citation_repaired = False
+        if not verification.verified and not verification.invalid_citations:
+            repaired_answer = _extractive_fallback(question, retrieved_chunks)
+            repaired_verification = verify_answer(repaired_answer, allowed_citations)
+            if repaired_verification.verified:
+                verification = repaired_verification
+                citation_repaired = True
+        trace.set("citation_repair_applied", citation_repaired)
+        trace.set("citation_verification", verification.as_dict())
+        if verification.verified:
+            final_answer = _ensure_answer_has_sources(verification.answer, sources)
+        else:
+            trace.set("guard_decision", "citation_verification_failed")
+            final_answer = _ensure_answer_has_sources(_citation_failure_answer(), sources)
+        trace.finish(status="ok", answer=final_answer)
 
-    messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_INSTRUCTION,
-        },
-        {
-            "role": "user",
-            "content": build_user_prompt(question, retrieved_chunks),
-        },
-    ]
-    answer = complete_chat_messages(messages)
-    final_answer = _ensure_answer_has_sources(answer, sources)
-
-    return {
-        "answer": final_answer,
-        "sources": sources,
-        "retrieved_chunks": _chunk_debug_info(retrieved_chunks),
-    }
+        return {
+            "answer": final_answer,
+            "sources": sources,
+            "retrieved_chunks": retrieved_debug,
+            "verification": verification.as_dict(),
+            "citation_repair_applied": citation_repaired,
+            "reranker_status": reranker_status,
+            "trace_id": trace.trace_id,
+        }
+    except Exception as exc:
+        setattr(exc, "trace_id", trace.trace_id)
+        trace.set("guard_decision", "exception")
+        trace.finish(status="error", error=exc)
+        raise
 
 
 def main() -> None:
     """Run one RAG question from the command line."""
     question = " ".join(sys.argv[1:]).strip() or "What time does the daily standup start?"
     result = answer_query(question)
+    answer = str(result["answer"]).split("\n\nSources:", maxsplit=1)[0].strip()
     print(f"Question: {question}")
-    print(f"Answer: {result['answer']}")
+    print(f"Answer: {answer}")
+    if result.get("trace_id"):
+        print(f"Trace: {result['trace_id']}")
     print("Sources:")
     for source in result["sources"]:
         print(f"- {source}")

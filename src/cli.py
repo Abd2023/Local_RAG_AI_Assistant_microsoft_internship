@@ -15,6 +15,10 @@ def print_answer(result: dict[str, object]) -> None:
     print("\nAnswer:")
     print(answer)
 
+    trace_id = result.get("trace_id")
+    if trace_id:
+        print(f"\nTrace: {trace_id}")
+
     retrieved_chunks = result.get("retrieved_chunks", [])
     if retrieved_chunks:
         print("\nSources:")

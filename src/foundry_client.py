@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import platform
+from typing import Any
 from typing import Callable
 
-from foundry_local_sdk import Configuration, FoundryLocalManager
-from foundry_local_sdk.exception import FoundryLocalException
-from foundry_local_sdk.imodel import IModel
-
 from src import config
+
+try:
+    from foundry_local_sdk.exception import FoundryLocalException
+except ImportError:  # pragma: no cover - exercised only in non-Windows Docker images
+    class FoundryLocalException(RuntimeError):
+        """Fallback error type when the Windows Foundry SDK is unavailable."""
 
 ProgressCallback = Callable[[float], None]
 ExecutionProviderProgressCallback = Callable[[str, float], None]
@@ -17,8 +20,10 @@ ExecutionProviderProgressCallback = Callable[[str, float], None]
 _APP_NAME = "Local_RAG_AI_Assistant"
 
 
-def get_manager() -> FoundryLocalManager:
+def get_manager() -> Any:
     """Initialize and return the Foundry Local singleton manager."""
+    from foundry_local_sdk import Configuration, FoundryLocalManager
+
     if FoundryLocalManager.instance is None:
         FoundryLocalManager.initialize(Configuration(app_name=_APP_NAME))
     return FoundryLocalManager.instance
@@ -55,7 +60,7 @@ def ensure_preferred_gpu_execution_provider() -> None:
         download_and_register_execution_providers(names=[config.PREFERRED_EXECUTION_PROVIDER])
 
 
-def _is_preferred_gpu_variant(model: IModel) -> bool:
+def _is_preferred_gpu_variant(model: Any) -> bool:
     runtime = model.info.runtime
     if runtime is None:
         return False
@@ -65,7 +70,7 @@ def _is_preferred_gpu_variant(model: IModel) -> bool:
     )
 
 
-def _select_preferred_model_variant(model: IModel, *, require_gpu: bool) -> IModel:
+def _select_preferred_model_variant(model: Any, *, require_gpu: bool) -> Any:
     gpu_variant = next((variant for variant in model.variants if _is_preferred_gpu_variant(variant)), None)
     if gpu_variant is not None:
         model.select_variant(gpu_variant)
@@ -85,7 +90,7 @@ def _select_preferred_model_variant(model: IModel, *, require_gpu: bool) -> IMod
 def get_chat_model(
     model_alias: str = config.CHAT_MODEL_ALIAS,
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
-) -> IModel:
+) -> Any:
     """Return the configured chat model from the Foundry Local catalog."""
     if require_gpu:
         ensure_preferred_gpu_execution_provider()
@@ -100,7 +105,7 @@ def get_chat_model(
 def get_embedding_model(
     model_alias: str = config.EMBEDDING_MODEL_ALIAS,
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
-) -> IModel:
+) -> Any:
     """Return the configured embedding model from the Foundry Local catalog."""
     if require_gpu:
         ensure_preferred_gpu_execution_provider()
@@ -157,6 +162,11 @@ def complete_chat_prompt(
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
 ) -> str:
     """Send one user prompt to the local chat model and return the response text."""
+    if config.RAG_PROVIDER != "foundry":
+        from src.providers import complete_chat
+
+        return complete_chat([{"role": "user", "content": prompt}])
+
     model = load_chat_model(
         model_alias,
         register_execution_providers=register_execution_providers,
@@ -187,6 +197,11 @@ def complete_chat_messages(
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
 ) -> str:
     """Send chat messages to the local chat model and return the response text."""
+    if config.RAG_PROVIDER != "foundry":
+        from src.providers import complete_chat
+
+        return complete_chat(messages)
+
     model = load_chat_model(
         model_alias,
         register_execution_providers=register_execution_providers,
@@ -207,6 +222,11 @@ def generate_embedding(
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
 ) -> list[float]:
     """Generate one local embedding vector for a single text string."""
+    if config.RAG_PROVIDER != "foundry":
+        from src.providers import generate_embedding as provider_generate_embedding
+
+        return provider_generate_embedding(text)
+
     model = load_embedding_model(
         model_alias,
         register_execution_providers=register_execution_providers,
@@ -224,6 +244,11 @@ def generate_embeddings(
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
 ) -> list[list[float]]:
     """Generate local embedding vectors for multiple text strings."""
+    if config.RAG_PROVIDER != "foundry":
+        from src.providers import generate_embeddings as provider_generate_embeddings
+
+        return provider_generate_embeddings(texts)
+
     model = load_embedding_model(
         model_alias,
         register_execution_providers=register_execution_providers,

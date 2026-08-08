@@ -1,6 +1,6 @@
 # Manual Evaluation
 
-Evaluation date: 2026-07-26
+Evaluation date: 2026-08-08
 
 This evaluation was run against the sample Northstar AI Summer School documents indexed in `data/rag.db`.
 The database contained 6 stored chunks, one chunk per sample document.
@@ -12,14 +12,15 @@ Commands used:
 .\.venv\Scripts\python.exe -B -m src.rag "What time does the daily standup start?"
 ```
 
-The full manual set was run through `src.rag.answer_query` so each question recorded the model answer, retrieved chunks, and any exception.
+The full manual set was run through `src.rag.answer_query` with cross-encoder reranking and citation verification enabled. Each question recorded the model answer, vector candidates, reranked chunks, evidence verification, and any exception.
 
 ## Summary
 
 - Answerable questions: 5 total, 5 pass.
 - Unanswerable questions: 3 total, 3 pass.
-- Vague or edge-case questions: 2 total, 1 pass, 1 fail.
-- Main failure pattern: short vague queries can retrieve broadly related chunks and produce an answer that is grounded but too narrow.
+- Vague or edge-case questions: 2 total, 2 pass.
+- Final live report: `data/evaluations/evaluation-20260808-135202.json`.
+- Main improvement: `Tell me about setup.` now ranks `tools_and_setup.md` first after reranking.
 
 ## Evaluation Questions
 
@@ -191,17 +192,17 @@ Expected behavior: Provide a short setup summary from `tools_and_setup.md`, such
 
 Actual answer:
 
-> The setup process begins with a local chat prompt, followed by an embedding call that converts a sentence into a numerical vector representation.
+> # Northstar AI Summer School Tools And Setup The first setup test is a local chat prompt that asks the model to say hello in one sentence. [tools_and_setup.md#0]
 
 Retrieved sources:
 
-- `grading_and_demo.md` chunk 1, similarity 0.383
-- `tools_and_setup.md` chunk 1, similarity 0.364
-- `support_and_policies.md` chunk 1, similarity 0.355
+- `tools_and_setup.md` chunk 1, rerank score 3.296
+- `support_and_policies.md` chunk 1, reranked below the setup source
+- `project_requirements.md` chunk 1, reranked below the setup source
 
-Judgment: Fail.
+Judgment: Pass.
 
-Notes for improvement: The setup document was retrieved, but not as the top result. The answer focused only on setup tests and missed environment/dependency setup. Likely cause: the query was too short and vague, and chunk-level retrieval ranked another document slightly higher.
+Notes for improvement: The small local chat model omitted citations, so the backend used a concise extractive fallback from the top reranked chunk and attached a validated citation.
 
 ### E2 - Vague Or Edge Case
 

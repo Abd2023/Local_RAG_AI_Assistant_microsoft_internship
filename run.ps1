@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("setup", "ingest", "cli", "ask", "test", "status", "help")]
+    [ValidateSet("setup", "ingest", "rebuild", "cli", "ask", "eval", "traces", "api", "test", "status", "help")]
     [string]$Command = "cli",
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
@@ -24,17 +24,25 @@ function Show-Help {
     Write-Host "Usage:"
     Write-Host "  .\run.ps1 setup"
     Write-Host "  .\run.ps1 ingest"
+    Write-Host "  .\run.ps1 rebuild"
     Write-Host "  .\run.ps1 cli"
     Write-Host "  .\run.ps1 ask ""What time does the daily standup start?"""
+    Write-Host "  .\run.ps1 eval"
+    Write-Host "  .\run.ps1 traces"
+    Write-Host "  .\run.ps1 api"
     Write-Host "  .\run.ps1 test"
     Write-Host "  .\run.ps1 status"
     Write-Host ""
     Write-Host "Notes:"
     Write-Host "  setup  creates .venv if needed and installs requirements."
-    Write-Host "  ingest builds data\rag.db from data\sample_docs."
-    Write-Host "  cli    starts the interactive Q&A assistant."
-    Write-Host "  ask    runs one question and exits."
-    Write-Host "  test   runs the unit test suite without model downloads."
+    Write-Host "  ingest  incrementally updates data\rag.db and data\lancedb."
+    Write-Host "  rebuild fully rebuilds metadata and vectors."
+    Write-Host "  cli     starts the interactive Q&A assistant."
+    Write-Host "  ask     runs one question and exits."
+    Write-Host "  eval    runs the manual evaluation questions and saves a JSON report."
+    Write-Host "  traces  prints recent local trace summaries."
+    Write-Host "  api     starts the local FastAPI service on port 8000."
+    Write-Host "  test    runs the unit test suite without model downloads."
     Write-Host ""
 }
 
@@ -86,9 +94,14 @@ switch ($Command) {
         Write-Host "Next: .\run.ps1 ingest"
     }
     "ingest" {
-        Write-Host "Building the local SQLite knowledge base..."
+        Write-Host "Incrementally updating the local knowledge base..."
         Write-Host "Foundry Local may download or load the embedding model on first run."
         Invoke-ProjectPython @("-B", "-m", "src.ingest")
+    }
+    "rebuild" {
+        Write-Host "Fully rebuilding the local knowledge base..."
+        Write-Host "Foundry Local may download or load the embedding model on first run."
+        Invoke-ProjectPython @("-B", "-m", "src.ingest", "--rebuild")
     }
     "cli" {
         Write-Host "Starting the Local RAG AI Assistant..."
@@ -103,6 +116,19 @@ switch ($Command) {
 
         Invoke-ProjectPython @("-B", "-m", "src.rag", $Question)
     }
+    "eval" {
+        Write-Host "Running manual evaluation questions..."
+        Invoke-ProjectPython @("-B", "-m", "src.evaluate")
+    }
+    "traces" {
+        Invoke-ProjectPython @("-B", "-m", "src.traces", "latest")
+    }
+    "api" {
+        Write-Host "Starting the local FastAPI service on http://localhost:8000..."
+        Assert-VenvExists
+        & $VenvPython -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+        Assert-CommandSucceeded "FastAPI service"
+    }
     "test" {
         Write-Host "Running unit tests..."
         Invoke-ProjectPython @("-B", "-m", "pytest", "-p", "no:cacheprovider")
@@ -111,7 +137,7 @@ switch ($Command) {
         Invoke-ProjectPython @(
             "-B",
             "-c",
-            "from src import config; from src.storage import count_chunks; print(f'Project: {config.PROJECT_ROOT}'); print(f'Database: {config.DATABASE_PATH}'); print(f'Sample docs: {config.SAMPLE_DOCS_PATH}'); print(f'Stored chunks: {count_chunks()}')"
+            "from src import config; from src.storage import count_chunks; from src.vector_store import count_vectors; print(f'Project: {config.PROJECT_ROOT}'); print(f'Database: {config.DATABASE_PATH}'); print(f'Vector DB: {config.VECTOR_DB_PATH}'); print(f'Sample docs: {config.SAMPLE_DOCS_PATH}'); print(f'Stored chunks: {count_chunks()}'); print(f'Stored vectors: {count_vectors()}')"
         )
     }
 }

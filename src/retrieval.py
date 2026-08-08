@@ -1,4 +1,4 @@
-"""Vector similarity retrieval over stored document chunks."""
+﻿"""Vector similarity retrieval over stored document chunks."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ import numpy as np
 
 from src import config
 from src.foundry_client import generate_embedding
-from src.storage import StoredChunk, fetch_all_chunks
+from src.storage import StoredChunk
+from src.vector_store import VectorStoreError, search_vectors
 
 
 class RetrievalError(RuntimeError):
@@ -27,6 +28,15 @@ class RetrievalResult:
     chunk_index: int
     content: str
     similarity: float
+    source_path: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    retrieval_score: float | None = None
+    extraction_method: str | None = None
+    heading: str | None = None
+    chunk_uid: str | None = None
+    rerank_score: float | None = None
+    ranking_method: str = "vector"
 
 
 def cosine_similarity(vector_a: Sequence[float], vector_b: Sequence[float]) -> float:
@@ -63,6 +73,13 @@ def rank_chunks_by_similarity(
             chunk_index=chunk.chunk_index,
             content=chunk.content,
             similarity=cosine_similarity(query_embedding, chunk.embedding),
+            source_path=chunk.source_path,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            retrieval_score=cosine_similarity(query_embedding, chunk.embedding),
+            extraction_method=chunk.extraction_method,
+            heading=chunk.heading,
+            chunk_uid=chunk.chunk_uid,
         )
         for chunk in chunks
     ]
@@ -70,23 +87,67 @@ def rank_chunks_by_similarity(
     return ranked[:top_k]
 
 
+def _result_from_vector_row(row: dict[str, object]) -> RetrievalResult:
+    return RetrievalResult(
+        chunk_id=int(row.get("sqlite_id") or 0),
+        source_name=str(row.get("source_name") or ""),
+        chunk_index=int(row.get("chunk_index") or 0),
+        content=str(row.get("content") or ""),
+        similarity=float(row.get("similarity") or 0.0),
+        source_path=str(row.get("source_path") or "") or None,
+        page_start=row.get("page_start") if row.get("page_start") is not None else None,
+        page_end=row.get("page_end") if row.get("page_end") is not None else None,
+        retrieval_score=float(row.get("similarity") or 0.0),
+        extraction_method=str(row.get("extraction_method") or "") or None,
+        heading=str(row.get("heading") or "") or None,
+        chunk_uid=str(row.get("chunk_uid") or "") or None,
+        rerank_score=(
+            float(row.get("rerank_score"))
+            if row.get("rerank_score") is not None
+            else None
+        ),
+        ranking_method=str(row.get("ranking_method") or "vector"),
+    )
+
+
+def _trace_span(trace: object | None, name: str):
+    if trace is not None and hasattr(trace, "span"):
+        return trace.span(name)
+
+    class _NoOpSpan:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    return _NoOpSpan()
+
+
 def retrieve_top_chunks(
     query: str,
     top_k: int = config.TOP_K,
-    db_path: Path = config.DATABASE_PATH,
+    db_path: Path = config.VECTOR_DB_PATH,
+    trace: object | None = None,
 ) -> list[RetrievalResult]:
-    """Embed a query and return the most similar stored chunks."""
+    """Embed a query and return the most similar stored chunks from LanceDB."""
     if not query.strip():
         raise ValueError("Query must not be empty.")
 
-    chunks = fetch_all_chunks(db_path)
-    if not chunks:
-        raise RetrievalError(
-            f"No chunks found in {db_path}. Run `python -m src.ingest` before retrieval."
-        )
+    with _trace_span(trace, "query_embedding"):
+        query_embedding = generate_embedding(query)
 
-    query_embedding = generate_embedding(query)
-    return rank_chunks_by_similarity(query_embedding, chunks, top_k=top_k)
+    try:
+        with _trace_span(trace, "vector_search"):
+            rows = search_vectors(query_embedding, top_k=top_k, vector_db_path=db_path)
+    except VectorStoreError as exc:
+        raise RetrievalError(f"{exc}") from exc
+
+    results = [_result_from_vector_row(row) for row in rows]
+    if trace is not None and hasattr(trace, "set"):
+        trace.set("retrieval_backend", "lancedb")
+        trace.set("retrieval_count", len(results))
+    return results
 
 
 def main() -> None:
