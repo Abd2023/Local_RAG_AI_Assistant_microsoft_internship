@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import re
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,9 +23,11 @@ from src.storage import (
     clear_all_metadata,
     connect,
     count_chunks,
+    count_chunks_for_document,
     create_chunks_table,
     delete_document,
     fetch_documents,
+    rebuild_lexical_index,
     replace_document_chunks,
     upsert_document,
 )
@@ -128,15 +131,23 @@ def split_text_blocks(text: str) -> list[str]:
 
 
 def split_oversized_block(block: str, max_words: int = MAX_CHUNK_WORDS) -> list[str]:
-    """Split one oversized block into word windows."""
+    """Split one oversized block into overlapping word windows."""
     words = block.split()
     if len(words) <= max_words:
         return [block]
 
-    return [
-        " ".join(words[index : index + max_words]).strip()
-        for index in range(0, len(words), max_words)
-    ]
+    overlap = (
+        min(max(config.CHUNK_OVERLAP_WORDS, 0), max_words - 1)
+        if max_words >= 32
+        else 0
+    )
+    step = max_words - overlap
+    windows: list[str] = []
+    for index in range(0, len(words), step):
+        windows.append(" ".join(words[index : index + max_words]).strip())
+        if index + max_words >= len(words):
+            break
+    return windows
 
 
 def _content_hash(content: str) -> str:
@@ -203,7 +214,7 @@ def chunk_text(
     def next_chunk_index() -> int:
         return start_index + len(chunks)
 
-    def flush_chunk() -> None:
+    def flush_chunk(*, preserve_overlap: bool = True) -> None:
         nonlocal current_word_count
         if not current_blocks:
             return
@@ -223,8 +234,19 @@ def chunk_text(
                     document_id=document_id,
                 )
             )
-        current_blocks.clear()
-        current_word_count = 0
+        overlap_words = 0
+        if preserve_overlap and max_words >= 32:
+            overlap_words = min(
+                max(config.CHUNK_OVERLAP_WORDS, 0),
+                max_words - 1,
+                max(target_words - 1, 0),
+            )
+        if overlap_words:
+            current_blocks[:] = [" ".join(content.split()[-overlap_words:])]
+            current_word_count = overlap_words
+        else:
+            current_blocks.clear()
+            current_word_count = 0
 
     for block in blocks:
         block_word_count = count_words(block)
@@ -232,7 +254,7 @@ def chunk_text(
             continue
 
         if block_word_count > max_words:
-            flush_chunk()
+            flush_chunk(preserve_overlap=False)
             for split_block in split_oversized_block(block, max_words=max_words):
                 chunks.append(
                     _make_chunk(
@@ -305,14 +327,29 @@ def _chunks_from_blocks(
     return chunks
 
 
-def load_document_chunks(docs_path: Path = config.SAMPLE_DOCS_PATH) -> list[DocumentChunk]:
-    """Load all supported sample documents and return their chunks."""
+def _document_roots(
+    docs_path: Path | Sequence[Path] | None,
+) -> list[Path]:
+    """Normalize explicit roots or the default sample-plus-upload corpus."""
+    if docs_path is None:
+        return [config.SAMPLE_DOCS_PATH, config.UPLOADS_PATH]
+    if isinstance(docs_path, Path):
+        return [docs_path]
+    return list(docs_path)
+
+
+def load_document_chunks(
+    docs_path: Path | Sequence[Path] | None = config.SAMPLE_DOCS_PATH,
+) -> list[DocumentChunk]:
+    """Load supported documents from one or more roots and return their chunks."""
     chunks: list[DocumentChunk] = []
-    for path in iter_supported_files(docs_path):
-        blocks = load_document(path)
-        if not blocks:
+    for root in _document_roots(docs_path):
+        if not root.exists():
             continue
-        chunks.extend(_chunks_from_blocks(blocks, document_id=document_id_for_path(path)))
+        for path in iter_supported_files(root):
+            blocks = load_document(path)
+            if blocks:
+                chunks.extend(_chunks_from_blocks(blocks, document_id=document_id_for_path(path)))
     return chunks
 
 
@@ -328,14 +365,18 @@ def _is_unchanged(stored_file_hash: str, fingerprint: FileFingerprint) -> bool:
 
 
 def ingest_documents(
-    docs_path: Path = config.SAMPLE_DOCS_PATH,
+    docs_path: Path | Sequence[Path] | None = None,
     *,
     db_path: Path = config.DATABASE_PATH,
     vector_db_path: Path = config.VECTOR_DB_PATH,
     rebuild: bool = False,
-) -> dict[str, int]:
-    """Incrementally index supported documents into SQLite metadata and LanceDB."""
-    files = iter_supported_files(docs_path)
+) -> dict[str, object]:
+    """Incrementally index supported documents into SQLite and the vector store."""
+    roots = _document_roots(docs_path)
+    files = sorted(
+        {path.resolve() for root in roots if root.exists() for path in iter_supported_files(root)},
+        key=str,
+    )
     connection = connect(db_path)
     summary = {
         "files": len(files),
@@ -348,6 +389,8 @@ def ingest_documents(
         "stored_vectors": 0,
         "final_rows": 0,
         "final_vectors": 0,
+        "documents": [],
+        "lexical_indexed": False,
     }
 
     try:
@@ -365,6 +408,14 @@ def ingest_documents(
                 delete_document_vectors(document.document_id, vector_db_path)
                 delete_document(connection, document.document_id)
                 summary["removed_files"] += 1
+                summary["documents"].append(
+                    {
+                        "document_name": document.source_name,
+                        "status": "removed",
+                        "chunks": 0,
+                        "vectors": 0,
+                    }
+                )
 
         connection.commit()
 
@@ -374,9 +425,19 @@ def ingest_documents(
             if (
                 not rebuild
                 and stored_document is not None
+                and stored_document.status in {"indexed", "empty"}
                 and _is_unchanged(stored_document.file_hash, fingerprint)
             ):
                 summary["skipped_files"] += 1
+                existing_chunks = count_chunks_for_document(stored_document.document_id, db_path)
+                summary["documents"].append(
+                    {
+                        "document_name": fingerprint.source_name,
+                        "status": "skipped",
+                        "chunks": existing_chunks,
+                        "vectors": existing_chunks,
+                    }
+                )
                 continue
 
             try:
@@ -411,7 +472,27 @@ def ingest_documents(
                 summary["chunks"] += len(chunks)
                 summary["stored_rows"] += len(stored_chunks)
                 summary["stored_vectors"] += vector_count
+                summary["documents"].append(
+                    {
+                        "document_name": fingerprint.source_name,
+                        "status": "indexed",
+                        "chunks": len(stored_chunks),
+                        "vectors": vector_count,
+                        "extraction_methods": sorted(
+                            {block.extraction_method for block in blocks}
+                        ),
+                    }
+                )
             except Exception as exc:
+                try:
+                    delete_document_vectors(fingerprint.document_id, vector_db_path)
+                    delete_document(connection, fingerprint.document_id)
+                    connection.commit()
+                except Exception as cleanup_exc:
+                    print(
+                        f"Warning cleaning failed document {path.name}: "
+                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                    )
                 upsert_document(
                     connection,
                     document_id=fingerprint.document_id,
@@ -425,16 +506,26 @@ def ingest_documents(
                 )
                 connection.commit()
                 summary["error_files"] += 1
+                summary["documents"].append(
+                    {
+                        "document_name": fingerprint.source_name,
+                        "status": "error",
+                        "chunks": 0,
+                        "vectors": 0,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
                 print(f"Error indexing {path.name}: {type(exc).__name__}: {exc}")
     finally:
         connection.close()
 
+    summary["lexical_indexed"] = rebuild_lexical_index(db_path)
     summary["final_rows"] = count_chunks(db_path)
     summary["final_vectors"] = count_vectors(vector_db_path)
     return summary
 
 
-def ingest_sample_documents() -> dict[str, int]:
+def ingest_sample_documents() -> dict[str, object]:
     """Load sample docs, embed chunks, and incrementally update the local index."""
     return ingest_documents(config.SAMPLE_DOCS_PATH)
 
@@ -452,30 +543,87 @@ def document_path_for_name(
         supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
         raise ValueError(f"Unsupported document type. Supported extensions: {supported}.")
 
-    destination_dir = (docs_path or config.SAMPLE_DOCS_PATH).resolve()
+    destination_dir = (docs_path or config.UPLOADS_PATH).resolve()
     destination_dir.mkdir(parents=True, exist_ok=True)
     return destination_dir / safe_name
+
+
+def _expand_upload_sources(source_paths: Sequence[Path]) -> list[Path]:
+    """Expand files and directories into supported, deterministic source paths."""
+    expanded: list[Path] = []
+    for raw_path in source_paths:
+        source = Path(raw_path).expanduser().resolve()
+        if not source.exists():
+            raise ValueError(f"Document path does not exist: {source}")
+        if source.is_file():
+            if source.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                raise ValueError(f"Unsupported document type: {source.name}")
+            expanded.append(source)
+            continue
+        expanded.extend(
+            sorted(
+                path
+                for path in source.rglob("*")
+                if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+            )
+        )
+    deduplicated: list[Path] = []
+    seen: set[Path] = set()
+    for path in expanded:
+        if path not in seen:
+            deduplicated.append(path)
+            seen.add(path)
+    if not deduplicated:
+        raise ValueError("No supported documents were found in the upload paths.")
+    return deduplicated
+
+
+def add_document_files(
+    source_paths: Sequence[Path],
+    docs_path: Path | None = None,
+) -> dict[str, object]:
+    """Stage multiple files and run one incremental indexing pass."""
+    sources = _expand_upload_sources(source_paths)
+    destination_dir = (docs_path or config.UPLOADS_PATH).resolve()
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    staged: list[dict[str, str]] = []
+    reserved: set[Path] = set()
+
+    for source in sources:
+        destination = document_path_for_name(source.name, destination_dir)
+        if destination in reserved:
+            digest = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:8]
+            destination = destination.with_name(
+                f"{destination.stem}_{digest}{destination.suffix}"
+            )
+        reserved.add(destination)
+        if source != destination:
+            shutil.copy2(source, destination)
+        staged.append(
+            {
+                "source_path": str(source),
+                "document_name": destination.name,
+                "document_path": str(destination),
+            }
+        )
+
+    summary = ingest_documents(
+        None if docs_path is None else destination_dir,
+    )
+    return {
+        "staged": staged,
+        "document_name": staged[0]["document_name"],
+        "document_path": staged[0]["document_path"],
+        **summary,
+    }
 
 
 def add_document_file(
     source_path: Path,
     docs_path: Path | None = None,
-) -> dict[str, int | str]:
-    """Copy one local document into the knowledge base and index it incrementally."""
-    source = Path(source_path).expanduser().resolve()
-    if not source.is_file():
-        raise ValueError(f"Document does not exist: {source}")
-
-    destination = document_path_for_name(source.name, docs_path)
-    if source != destination:
-        shutil.copy2(source, destination)
-
-    summary = ingest_documents(destination.parent)
-    return {
-        "document_name": destination.name,
-        "document_path": str(destination),
-        **summary,
-    }
+) -> dict[str, object]:
+    """Copy one local document into the upload corpus and index it."""
+    return add_document_files([source_path], docs_path=docs_path)
 
 
 def main() -> None:
@@ -491,10 +639,10 @@ def main() -> None:
 
     if args.document:
         summary = add_document_file(Path(args.document))
-        print(f"Added document: {summary['document_name']}")
+        print(f"Added documents: {len(summary['staged'])}")
     else:
         summary = ingest_documents(rebuild=args.rebuild)
-    print(f"Found {summary['files']} supported files in {config.SAMPLE_DOCS_PATH}")
+    print(f"Found {summary['files']} supported files in the local corpus")
     print(f"Indexed files: {summary['indexed_files']}")
     print(f"Skipped unchanged files: {summary['skipped_files']}")
     print(f"Removed files: {summary['removed_files']}")
@@ -502,6 +650,7 @@ def main() -> None:
     print(f"New or changed chunks embedded: {summary['chunks']}")
     print(f"Stored rows written this run: {summary['stored_rows']}")
     print(f"Stored vectors written this run: {summary['stored_vectors']}")
+    print(f"Lexical index ready: {summary['lexical_indexed']}")
     print(f"Final SQLite chunk rows: {summary['final_rows']}")
     print(f"Final {config.VECTOR_BACKEND} vector rows: {summary['final_vectors']}")
 

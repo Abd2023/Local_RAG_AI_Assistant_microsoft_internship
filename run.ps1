@@ -130,7 +130,7 @@ switch ($Command) {
     }
     "eval" {
         Write-Host "Running manual evaluation questions..."
-        Invoke-ProjectPython @("-B", "-m", "src.evaluate")
+        Invoke-ProjectPython (@("-B", "-m", "src.evaluate") + $RemainingArgs)
     }
     "traces" {
         Invoke-ProjectPython @("-B", "-m", "src.traces", "latest")

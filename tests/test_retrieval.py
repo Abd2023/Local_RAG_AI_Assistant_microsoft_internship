@@ -120,6 +120,47 @@ def test_retrieve_top_chunks_uses_injected_embedding_and_vector_rows(
     assert results[0].source_path == "C:/docs/second.md"
 
 
+def test_retrieve_top_chunks_merges_lexical_candidates(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(retrieval, "generate_embedding", lambda _query: [1.0, 0.0])
+    monkeypatch.setattr(
+        retrieval,
+        "search_vectors",
+        lambda *_args, **_kwargs: [
+            {
+                "sqlite_id": 1,
+                "source_name": "semantic.md",
+                "chunk_index": 0,
+                "content": "A general project overview.",
+                "similarity": 0.0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_lexical_chunks",
+        lambda *_args, **_kwargs: [
+            {
+                "sqlite_id": 2,
+                "source_name": "exact.md",
+                "chunk_index": 0,
+                "content": "The exact Turkish terminology is burada.",
+                "similarity": 0.0,
+                "lexical_score": 1.0,
+            }
+        ],
+    )
+
+    results = retrieval.retrieve_top_chunks(
+        "Turkish terminology",
+        top_k=2,
+        db_path=tmp_path / "lancedb",
+    )
+
+    assert [result.source_name for result in results] == ["exact.md", "semantic.md"]
+    assert results[0].lexical_score == 1.0
+    assert results[0].hybrid_score > results[1].hybrid_score
+
+
 def test_retrieve_top_chunks_rejects_empty_query() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         retrieval.retrieve_top_chunks("   ")

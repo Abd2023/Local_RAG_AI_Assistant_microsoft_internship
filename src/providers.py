@@ -71,7 +71,7 @@ class OllamaProvider:
                 model=self.chat_model,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=250,
+                max_tokens=config.CHAT_MAX_TOKENS,
             )
             return response.choices[0].message.content or ""
         except Exception as exc:  # pragma: no cover - requires a running Ollama service

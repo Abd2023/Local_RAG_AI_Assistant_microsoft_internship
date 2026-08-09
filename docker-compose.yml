@@ -31,7 +31,7 @@ services:
       RAG_PROVIDER: ollama
       VECTOR_BACKEND: qdrant
       OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_CHAT_MODEL: qwen2.5:0.5b
+      OLLAMA_CHAT_MODEL: phi4-mini
       OLLAMA_EMBEDDING_MODEL: nomic-embed-text
       QDRANT_URL: http://qdrant:6333
       RERANKER_ENABLED: "true"

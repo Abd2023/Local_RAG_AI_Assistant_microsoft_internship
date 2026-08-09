@@ -124,15 +124,22 @@ def load_chat_model(
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
 ) -> IModel:
     """Download and load the configured chat model for local inference."""
-    if register_execution_providers:
-        ensure_preferred_gpu_execution_provider()
+    try:
+        if register_execution_providers:
+            ensure_preferred_gpu_execution_provider()
 
-    model = get_chat_model(model_alias, require_gpu=require_gpu)
-    if not model.is_cached:
-        model.download(progress_callback=progress_callback)
-    if not model.is_loaded:
-        model.load()
-    return model
+        model = get_chat_model(model_alias, require_gpu=require_gpu)
+        if not model.is_cached:
+            model.download(progress_callback=progress_callback)
+        if not model.is_loaded:
+            model.load()
+        return model
+    except Exception as exc:
+        raise FoundryLocalException(
+            f"Unable to load configured Foundry Local chat model alias '{model_alias}'. "
+            "Download/cache the model in Foundry Local and verify its GPU variant is available. "
+            f"Details: {exc}"
+        ) from exc
 
 
 def load_embedding_model(
@@ -142,21 +149,28 @@ def load_embedding_model(
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
 ) -> IModel:
     """Download and load the configured embedding model for local inference."""
-    if register_execution_providers:
-        ensure_preferred_gpu_execution_provider()
+    try:
+        if register_execution_providers:
+            ensure_preferred_gpu_execution_provider()
 
-    model = get_embedding_model(model_alias, require_gpu=require_gpu)
-    if not model.is_cached:
-        model.download(progress_callback=progress_callback)
-    if not model.is_loaded:
-        model.load()
-    return model
+        model = get_embedding_model(model_alias, require_gpu=require_gpu)
+        if not model.is_cached:
+            model.download(progress_callback=progress_callback)
+        if not model.is_loaded:
+            model.load()
+        return model
+    except Exception as exc:
+        raise FoundryLocalException(
+            f"Unable to load configured Foundry Local embedding model alias '{model_alias}'. "
+            "Download/cache the model in Foundry Local and verify its GPU variant is available. "
+            f"Details: {exc}"
+        ) from exc
 
 
 def complete_chat_prompt(
     prompt: str,
     model_alias: str = config.CHAT_MODEL_ALIAS,
-    max_tokens: int = 80,
+    max_tokens: int = config.CHAT_MAX_TOKENS,
     temperature: float = 0.2,
     register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
     require_gpu: bool = config.REQUIRE_GPU_MODELS,
@@ -191,7 +205,7 @@ def complete_chat_prompt(
 def complete_chat_messages(
     messages: list[dict[str, str]],
     model_alias: str = config.CHAT_MODEL_ALIAS,
-    max_tokens: int = 250,
+    max_tokens: int = config.CHAT_MAX_TOKENS,
     temperature: float = 0.1,
     register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
     require_gpu: bool = config.REQUIRE_GPU_MODELS,

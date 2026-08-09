@@ -37,7 +37,7 @@ EVALUATION_QUESTIONS: list[dict[str, str]] = [
         "id": "A4",
         "category": "answerable",
         "question": "What are the default chat and embedding models for the course?",
-        "expected": "The chat model is qwen2.5-0.5b and the embedding model is qwen3-embedding-0.6b.",
+        "expected": "The chat model is phi-4-mini and the embedding model is qwen3-embedding-0.6b.",
     },
     {
         "id": "A5",
@@ -76,6 +76,43 @@ EVALUATION_QUESTIONS: list[dict[str, str]] = [
         "expected": "A clear empty-question validation error.",
         "expected_error": "ValueError",
     },
+]
+
+EXPANDED_EVALUATION_QUESTIONS: list[dict[str, str]] = [
+    *EVALUATION_QUESTIONS,
+    {
+        "id": "A6",
+        "category": "answerable",
+        "question": "What is the name of the fictional four-week program?",
+        "expected": "Northstar AI Summer School.",
+    },
+    {
+        "id": "A7",
+        "category": "answerable",
+        "question": "What percentage of scheduled sessions is attendance required?",
+        "expected": "At least 85 percent.",
+    },
+    {
+        "id": "A8",
+        "category": "answerable",
+        "question": "What is the support path and when are office hours held?",
+        "expected": "Teammate, course notes, instructor; Tuesdays and Thursdays from 4:15 PM to 5:00 PM.",
+    },
+    {
+        "id": "A9",
+        "category": "answerable",
+        "question": "Summarize the project requirements and responsible answer behavior.",
+        "expected": "Local embeddings, chunked documents, retrieval, SQLite metadata, and no invented answers.",
+    },
+]
+
+TURKISH_EVALUATION_QUESTIONS: list[dict[str, str]] = [
+    {
+        "id": "T1",
+        "category": "turkish",
+        "question": "Türkçe belgedeki kurulum gereksinimlerini ve önemli uyarıları özetle.",
+        "expected": "Run after uploading the target Turkish PDF; inspect answer, sources, and citation verification.",
+    }
 ]
 
 
@@ -206,9 +243,22 @@ def main() -> None:
     """Run the manual evaluation suite."""
     parser = argparse.ArgumentParser(description="Run the local RAG evaluation questions.")
     parser.add_argument("--output-dir", type=Path, default=config.EVALUATIONS_PATH)
+    parser.add_argument(
+        "--expanded",
+        action="store_true",
+        help="Include exact-fact, multi-chunk, and summary questions.",
+    )
+    parser.add_argument(
+        "--turkish",
+        action="store_true",
+        help="Add the Turkish-language question; upload a Turkish document first.",
+    )
     args = parser.parse_args()
 
-    report = run_evaluation(output_dir=args.output_dir)
+    questions = EXPANDED_EVALUATION_QUESTIONS if args.expanded else EVALUATION_QUESTIONS
+    if args.turkish:
+        questions = [*questions, *TURKISH_EVALUATION_QUESTIONS]
+    report = run_evaluation(output_dir=args.output_dir, questions=questions)
     summary = report["summary"]
     print(f"Evaluation saved to {report['output_path']}")
     print(f"Total: {summary['total']} | OK: {summary['ok']} | Errors: {summary['errors']}")

@@ -69,6 +69,11 @@ class TraceRecorder:
                 "settings": {
                     "top_k": config.TOP_K,
                     "reranker_candidate_k": config.RERANKER_CANDIDATE_K,
+                    "lexical_candidate_k": config.LEXICAL_CANDIDATE_K,
+                    "hybrid_retrieval": config.HYBRID_RETRIEVAL_ENABLED,
+                    "reranker_device": config.RERANKER_DEVICE,
+                    "chat_max_tokens": config.CHAT_MAX_TOKENS,
+                    "max_context_chars": config.MAX_CONTEXT_CHARS,
                     "retrieval_min_top_score": config.RETRIEVAL_MIN_TOP_SCORE,
                 },
                 "timings_ms": {},

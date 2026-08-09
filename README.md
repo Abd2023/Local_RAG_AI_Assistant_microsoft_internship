@@ -6,9 +6,12 @@ The project answers questions from local documents only. It retrieves relevant c
 
 ## Current Capabilities
 
-- CLI question answering with local Foundry Local models.
+- CLI question answering with local Foundry Local or Ollama models.
 - Markdown, text, PDF, and DOCX ingestion.
 - Incremental indexing that skips unchanged files and removes deleted documents.
+- Hybrid semantic plus SQLite FTS5 lexical retrieval for exact names, numbers, dates, and terminology.
+- Full-chunk prompts with PDF page, heading, extraction method, and source-path metadata.
+- Phi-4-mini chat defaults: `phi-4-mini` through Foundry Local and `phi4-mini` through Ollama.
 - SQLite metadata storage at `data/rag.db`.
 - LanceDB vector storage at `data/lancedb`.
 - Local JSONL traces at `data/traces`.
@@ -43,7 +46,18 @@ Add a new local document and index it immediately:
 .\run.ps1 ask "What is this document about?"
 ```
 
-Uploads support `.md`, `.txt`, `.pdf`, and `.docx`. The file is copied into `data\sample_docs`, then the normal incremental pipeline extracts text, runs OCR when required, chunks the content, creates embeddings, updates the vector store, and records metadata. Re-uploading the same filename only re-indexes it when its contents changed.
+Uploads support `.md`, `.txt`, `.pdf`, and `.docx`. The file is copied into the ignored `data\uploads` directory, then the normal incremental pipeline extracts text, runs OCR when required, chunks the content, creates embeddings, updates both search indexes, and records metadata. Re-uploading an unchanged file skips embedding; a changed file replaces its chunks and vectors.
+
+The interactive CLI accepts one path, multiple quoted paths, or a recursive directory:
+
+```text
+Question> /upload 'C:\path\Package Geliştirici Kılavuzu.pdf'
+Question> /upload 'C:\path\one.pdf' 'C:\path\two.pdf'
+Question> /upload 'C:\path\documents-folder'
+Question> What are the main requirements in this document?
+```
+
+The directory form recursively includes `.pdf`, `.docx`, `.md`, and `.txt` files and performs one combined indexing pass. Failed files are reported without blocking valid files. Upload commands never call the chat model.
 
 Run tests:
 
@@ -55,6 +69,7 @@ Run the manual evaluation set and inspect traces:
 
 ```powershell
 .\run.ps1 eval
+.\run.ps1 eval --expanded
 .\run.ps1 traces
 ```
 
@@ -69,10 +84,12 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1 cli
 - `.\\run.ps1 setup`: create `.venv` if needed and install dependencies.
 - `.\\run.ps1 ingest`: incrementally update changed documents.
 - `.\\run.ps1 rebuild`: fully rebuild SQLite metadata and LanceDB vectors.
-- `.\\run.ps1 upload "path"`: copy one supported document into the knowledge base and index it immediately.
+- `.\\run.ps1 upload "path"`: copy one supported document into `data\\uploads` and index it immediately.
 - `.\\run.ps1 cli`: start the interactive assistant.
 - `.\\run.ps1 ask "question"`: ask one question and exit.
-- `.\\run.ps1 eval`: run the 10-question evaluation suite.
+- `.\\run.ps1 eval`: run the 10-question acceptance suite (5 answerable, 3 unanswerable, 2 edge cases).
+- `.\\run.ps1 eval --expanded`: add exact-fact, multi-chunk, and full-summary cases.
+- `.\\run.ps1 eval --expanded --turkish`: also test a Turkish-language document after uploading it.
 - `.\\run.ps1 traces`: print recent local trace summaries.
 - `.\\run.ps1 status`: show database/vector counts.
 - `.\\run.ps1 test`: run unit tests.
@@ -80,15 +97,15 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1 cli
 ## Architecture
 
 ```text
-data/sample_docs
+data/sample_docs + data/uploads
   -> document loaders (.md, .txt, .pdf, .docx)
   -> chunking with source metadata
   -> local embeddings through Foundry Local or Ollama
   -> SQLite document/chunk metadata
   -> LanceDB or Qdrant vector rows
   -> query embedding
-  -> vector search (top 10 candidates)
-  -> cross-encoder reranking (top 3)
+  -> hybrid vector + SQLite FTS5 search (up to 20 candidates)
+  -> CPU cross-encoder reranking (best 5 chunks)
   -> guarded RAG prompt
   -> local chat model
   -> citation verification
@@ -97,7 +114,7 @@ data/sample_docs
 
 ## Reranking and Evidence
 
-The default reranker is `cross-encoder/ms-marco-MiniLM-L-6-v2`. It is loaded lazily and can be configured with `RERANKER_MODEL`, `RERANKER_DEVICE`, `RERANKER_CANDIDATE_K`, `RAG_TOP_K`, and `RERANKER_ENABLED`. Unit tests inject a fake scorer, so normal test runs do not download a model.
+The default reranker is `cross-encoder/ms-marco-MiniLM-L-6-v2`, configured for CPU by default so Phi-4-mini can use the GPU. It is loaded lazily and can be configured with `RERANKER_MODEL`, `RERANKER_DEVICE`, `RERANKER_BATCH_SIZE`, `RERANKER_CANDIDATE_K`, `RAG_TOP_K`, and `RERANKER_ENABLED`. Unit tests inject a fake scorer, so normal test runs do not download a model.
 
 Every factual sentence must use a retrieved citation such as `[tools_and_setup.md#0]`. The backend rejects uncited or invented citations and returns verification details in the response and local trace.
 
@@ -108,7 +125,7 @@ Start the native service with `run.ps1 api`, then use:
 - `GET http://localhost:8000/api/health`
 - `POST http://localhost:8000/api/query` with `{ "question": "..." }`
 - `POST http://localhost:8000/api/ingest`
-- `POST http://localhost:8000/api/upload` as multipart form data with field name `file`
+- `POST http://localhost:8000/api/upload` as multipart form data with one or more repeated `files` fields; the legacy `file` field is also accepted.
 - `GET http://localhost:8000/api/traces/{trace_id}`
 
 ## Docker Compose
@@ -117,7 +134,7 @@ The Compose stack runs the backend with Ollama and Qdrant and serves the React i
 
 ```powershell
 docker compose up -d qdrant ollama
-docker compose exec ollama ollama pull qwen2.5:0.5b
+docker compose exec ollama ollama pull phi4-mini
 docker compose exec ollama ollama pull nomic-embed-text
 docker compose up --build -d backend frontend
 ```
@@ -138,6 +155,7 @@ These paths are generated and intentionally ignored by Git:
 - `data/lancedb/`
 - `data/traces/`
 - `data/evaluations/`
+- `data/uploads/`
 - `.venv/`
 
 ## Useful Test Questions

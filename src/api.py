@@ -47,8 +47,12 @@ app.add_middleware(
 )
 
 
-def _safe_documents_path(documents_path: str | None) -> Path:
-    path = Path(documents_path) if documents_path else config.SAMPLE_DOCS_PATH
+def _safe_documents_path(documents_path: str | None) -> Path | None:
+    """Validate an optional data directory, preserving the combined default."""
+    if not documents_path:
+        return None
+
+    path = Path(documents_path)
     resolved = path.resolve()
     data_root = config.DATA_DIR.resolve()
     if resolved != data_root and data_root not in resolved.parents:
@@ -96,8 +100,9 @@ def query(request: QueryRequest) -> dict[str, object]:
 
 
 @app.post("/api/ingest")
-def ingest(request: IngestRequest) -> dict[str, object]:
-    """Incrementally index an allowed local documents directory."""
+def ingest(request: IngestRequest | None = None) -> dict[str, object]:
+    """Incrementally index an allowed directory, or the sample and upload corpus."""
+    request = request or IngestRequest()
     documents_path = _safe_documents_path(request.documents_path)
     try:
         return ingest_documents(documents_path, rebuild=request.rebuild)
@@ -106,52 +111,110 @@ def ingest(request: IngestRequest) -> dict[str, object]:
 
 
 @app.post("/api/upload")
-async def upload(file: UploadFile = File(...)) -> dict[str, object]:
-    """Store one document and immediately run incremental indexing."""
+async def upload(
+    files: list[UploadFile] | None = File(default=None),
+    file: UploadFile | None = File(default=None),
+) -> dict[str, object]:
+    """Store one or more documents and immediately run one indexing pass."""
+    uploads = list(files or [])
+    if file is not None:
+        uploads.append(file)
+    if not uploads:
+        raise HTTPException(status_code=400, detail="At least one document is required.")
+
+    staged_paths: list[Path] = []
+    response_files: list[dict[str, object]] = []
+    reserved_destinations: set[Path] = set()
+
+    for upload_file in uploads:
+        temporary_path: Path | None = None
+        try:
+            destination = document_path_for_name(upload_file.filename or "")
+            if destination in reserved_destinations:
+                destination = destination.with_name(
+                    f"{destination.stem}_{len(reserved_destinations)}{destination.suffix}"
+                )
+            reserved_destinations.add(destination)
+
+            size_bytes = 0
+            with NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{destination.name}.",
+                suffix=".uploading",
+                dir=destination.parent,
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                while chunk := await upload_file.read(1024 * 1024):
+                    size_bytes += len(chunk)
+                    if size_bytes > config.MAX_UPLOAD_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"Document exceeds the "
+                                f"{config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit."
+                            ),
+                        )
+                    temporary.write(chunk)
+
+            if size_bytes == 0:
+                raise HTTPException(status_code=400, detail="Uploaded document is empty.")
+
+            temporary_path.replace(destination)
+            temporary_path = None
+            staged_paths.append(destination)
+            response_files.append(
+                {
+                    "document_name": destination.name,
+                    "document_path": str(destination),
+                    "status": "staged",
+                }
+            )
+        except HTTPException as exc:
+            response_files.append(
+                {
+                    "document_name": upload_file.filename or "unknown",
+                    "status": "error",
+                    "error": str(exc.detail),
+                }
+            )
+        except Exception as exc:
+            response_files.append(
+                {
+                    "document_name": upload_file.filename or "unknown",
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            await upload_file.close()
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    if not staged_paths:
+        raise HTTPException(status_code=400, detail={"files": response_files})
+
     try:
-        destination = document_path_for_name(file.filename or "")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    temporary_path: Path | None = None
-    size_bytes = 0
-    try:
-        with NamedTemporaryFile(
-            mode="wb",
-            prefix=f".{destination.name}.",
-            suffix=".uploading",
-            dir=destination.parent,
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            while chunk := await file.read(1024 * 1024):
-                size_bytes += len(chunk)
-                if size_bytes > config.MAX_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"Document exceeds the {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.",
-                    )
-                temporary.write(chunk)
-
-        if size_bytes == 0:
-            raise HTTPException(status_code=400, detail="Uploaded document is empty.")
-
-        temporary_path.replace(destination)
-        temporary_path = None
-        summary = ingest_documents(destination.parent)
-        return {
-            "document_name": destination.name,
-            "document_path": str(destination),
-            "index": summary,
-        }
-    except HTTPException:
-        raise
+        summary = ingest_documents()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        await file.close()
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+
+    outcomes = {
+        str(item.get("document_name")): item
+        for item in summary.get("documents", [])
+        if isinstance(item, dict)
+    }
+    for item in response_files:
+        outcome = outcomes.get(str(item.get("document_name")))
+        if outcome:
+            item.update(outcome)
+
+    return {
+        "document_name": response_files[0].get("document_name"),
+        "document_path": response_files[0].get("document_path"),
+        "files": response_files,
+        "index": summary,
+    }
 
 
 @app.get("/api/traces/{trace_id}")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Iterable, Protocol, Sequence
 
 from src import config
+
+LEXICAL_TABLE = "chunks_fts"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -123,7 +126,111 @@ def create_chunks_table(connection: sqlite3.Connection) -> None:
             connection.execute(f"ALTER TABLE chunks ADD COLUMN {column_name} {column_type}")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_chunks_chunk_uid ON chunks(chunk_uid)")
+    try:
+        connection.execute(
+            f"""CREATE VIRTUAL TABLE IF NOT EXISTS {LEXICAL_TABLE}
+            USING fts5(content, source_name, heading, content='chunks', content_rowid='id')"""
+        )
+    except sqlite3.OperationalError:
+        # Some minimal SQLite builds omit FTS5. Vector retrieval remains available.
+        pass
     connection.commit()
+
+
+def rebuild_lexical_index(db_path: Path = config.DATABASE_PATH) -> bool:
+    """Rebuild the SQLite FTS5 index from the canonical chunk table."""
+    connection = connect(db_path)
+    try:
+        create_chunks_table(connection)
+        try:
+            connection.execute(
+                f"INSERT INTO {LEXICAL_TABLE}({LEXICAL_TABLE}) VALUES ('rebuild')"
+            )
+        except sqlite3.OperationalError:
+            return False
+        connection.commit()
+        return True
+    finally:
+        connection.close()
+
+
+def _fts_query(query: str) -> str:
+    """Build a forgiving OR query for exact terms and identifiers."""
+    tokens = re.findall(r"[\w]+", query, flags=re.UNICODE)
+    return " OR ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+
+
+def search_lexical_chunks(
+    query: str,
+    top_k: int = config.LEXICAL_CANDIDATE_K,
+    db_path: Path = config.DATABASE_PATH,
+) -> list[dict[str, object]]:
+    """Return FTS5-ranked chunk rows for exact-term retrieval."""
+    if top_k <= 0:
+        raise ValueError("top_k must be greater than zero.")
+
+    match_query = _fts_query(query)
+    if not match_query:
+        return []
+
+    connection = connect(db_path)
+    try:
+        create_chunks_table(connection)
+        try:
+            rows = connection.execute(
+                f"""SELECT c.id, c.chunk_uid, c.document_id, c.source_path,
+                    c.source_name, c.chunk_index, c.content, c.page_start, c.page_end,
+                    c.extraction_method, c.heading,
+                    bm25({LEXICAL_TABLE}) AS bm25_score
+                    FROM {LEXICAL_TABLE}
+                    JOIN chunks AS c ON c.id = {LEXICAL_TABLE}.rowid
+                    WHERE {LEXICAL_TABLE} MATCH ?
+                    ORDER BY bm25_score ASC
+                    LIMIT ?""",
+                (match_query, top_k),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        results: list[dict[str, object]] = []
+        for rank, row in enumerate(rows):
+            results.append(
+                {
+                    "sqlite_id": int(row["id"]),
+                    "chunk_uid": row["chunk_uid"],
+                    "document_id": row["document_id"],
+                    "source_path": row["source_path"],
+                    "source_name": row["source_name"],
+                    "chunk_index": int(row["chunk_index"]),
+                    "content": row["content"],
+                    "page_start": row["page_start"],
+                    "page_end": row["page_end"],
+                    "extraction_method": row["extraction_method"],
+                    "heading": row["heading"],
+                    "lexical_score": 1.0 / (rank + 1),
+                    "bm25_score": float(row["bm25_score"]),
+                }
+            )
+        return results
+    finally:
+        connection.close()
+
+
+def count_chunks_for_document(
+    document_id: str,
+    db_path: Path = config.DATABASE_PATH,
+) -> int:
+    """Return the number of indexed chunks belonging to one document."""
+    connection = connect(db_path)
+    try:
+        create_chunks_table(connection)
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM chunks WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return int(row["count"])
 
 
 def clear_chunks(connection: sqlite3.Connection) -> None:

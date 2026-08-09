@@ -43,27 +43,31 @@ function App() {
   }
 
   async function uploadDocument(event) {
-    const file = event.target.files?.[0];
-    if (!file || uploading) return;
+    const files = Array.from(event.target.files || []);
+    if (!files.length || uploading) return;
 
     setUploading(true);
     setError("");
     setUploadMessage("");
     try {
       const formData = new FormData();
-      formData.append("file", file);
+      files.forEach((file) => formData.append("files", file));
       const response = await fetch("/api/upload", {
         method: "POST",
         body: formData,
       });
       const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || "The document upload failed.");
+        const detail = typeof payload.detail === "string" ? payload.detail : JSON.stringify(payload.detail);
+        throw new Error(detail || "The document upload failed.");
       }
 
       const index = payload.index || {};
+      const uploadedCount = (payload.files || []).filter(
+        (uploaded) => uploaded.status === "indexed" || uploaded.status === "skipped",
+      ).length;
       setUploadMessage(
-        `${payload.document_name} is ready: ${index.chunks ?? 0} chunks indexed.`,
+        `${uploadedCount} document(s) ready: ${index.chunks ?? 0} chunks indexed.`,
       );
       const healthResponse = await fetch("/api/health");
       if (healthResponse.ok) setHealth(await healthResponse.json());
@@ -110,6 +114,7 @@ function App() {
               id="document-upload"
               type="file"
               accept=".md,.txt,.pdf,.docx"
+              multiple
               onChange={uploadDocument}
               disabled={uploading}
             />
@@ -138,6 +143,8 @@ function App() {
                 <div><span>Trace</span><strong>{result.trace_id}</strong></div>
                 <div><span>Ranking</span><strong>{result.reranker_status}</strong></div>
                 <div><span>Claims</span><strong>{result.verification?.claims?.length ?? 0}</strong></div>
+                <div><span>Confidence</span><strong>{Math.round((result.confidence ?? 0) * 100)}%</strong></div>
+                <div><span>Grounding</span><strong>{result.grounding?.verified ? "Verified" : "Failed"}</strong></div>
               </div>
 
               <h3>Retrieved evidence</h3>

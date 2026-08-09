@@ -88,11 +88,11 @@ Notes for improvement: The top retrieved source was correct. Similarity scores w
 
 Question: What are the default chat and embedding models for the course?
 
-Expected behavior: Answer that the chat model is `qwen2.5-0.5b`, the embedding model is `qwen3-embedding-0.6b`, and cite `tools_and_setup.md`.
+Expected behavior: Answer that the chat model is `phi-4-mini`, the embedding model is `qwen3-embedding-0.6b`, and cite `tools_and_setup.md`.
 
 Actual answer:
 
-> The default chat model for the course is `qwen2.5-0.5b` and the default embedding model is `qwen3-embedding-0.6b`.
+> The default chat model for the course is `phi-4-mini` and the default embedding model is `qwen3-embedding-0.6b`.
 
 Retrieved sources:
 
@@ -229,3 +229,7 @@ Notes for improvement: The direct API behavior is clear. A separate CLI smoke te
 - Add a prompt rule that says: if the requested level of specificity is missing, state that it is missing before giving related information.
 - Improve vague-query handling by asking a clarifying question when the query has too few meaningful keywords.
 - Consider splitting larger sample documents into smaller chunks so retrieval ranks specific setup, grading, schedule, and policy facts more cleanly.
+
+## Expanded Evaluation
+
+Run `.\run.ps1 eval --expanded` for exact names, percentages, a question spanning the support and office-hours sections, and a full-requirements summary. After uploading a Turkish PDF, run `.\run.ps1 eval --expanded --turkish` and inspect the Turkish answer, PDF page metadata, retrieved sources, and citation verification. The evaluator records these results but does not claim semantic entailment beyond the deterministic citation and grounding checks.

@@ -32,10 +32,10 @@ class LoadedTextBlock:
 
 
 def iter_supported_files(docs_path: Path = config.SAMPLE_DOCS_PATH) -> list[Path]:
-    """Return supported source files in deterministic order."""
+    """Return supported source files recursively in deterministic order."""
     return sorted(
         path
-        for path in docs_path.iterdir()
+        for path in docs_path.rglob("*")
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
     )
 

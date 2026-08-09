@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -12,6 +12,7 @@ import numpy as np
 from src import config
 from src.foundry_client import generate_embedding
 from src.storage import StoredChunk
+from src.storage import search_lexical_chunks
 from src.vector_store import VectorStoreError, search_vectors
 
 
@@ -36,6 +37,8 @@ class RetrievalResult:
     heading: str | None = None
     chunk_uid: str | None = None
     rerank_score: float | None = None
+    lexical_score: float | None = None
+    hybrid_score: float | None = None
     ranking_method: str = "vector"
 
 
@@ -106,8 +109,68 @@ def _result_from_vector_row(row: dict[str, object]) -> RetrievalResult:
             if row.get("rerank_score") is not None
             else None
         ),
+        lexical_score=(
+            float(row.get("lexical_score"))
+            if row.get("lexical_score") is not None
+            else None
+        ),
+        hybrid_score=(
+            float(row.get("hybrid_score"))
+            if row.get("hybrid_score") is not None
+            else None
+        ),
         ranking_method=str(row.get("ranking_method") or "vector"),
     )
+
+
+def _merge_hybrid_rows(
+    vector_rows: list[dict[str, object]],
+    lexical_rows: list[dict[str, object]],
+    top_k: int,
+) -> list[RetrievalResult]:
+    """Merge vector and exact-term candidates before cross-encoder reranking."""
+    merged: dict[str, dict[str, object]] = {}
+
+    def key_for(row: dict[str, object]) -> str:
+        return str(row.get("chunk_uid") or row.get("sqlite_id") or (
+            row.get("source_name"), row.get("chunk_index")
+        ))
+
+    for row in vector_rows:
+        merged[key_for(row)] = dict(row)
+
+    for row in lexical_rows:
+        key = key_for(row)
+        if key not in merged:
+            merged[key] = dict(row)
+        else:
+            merged[key]["lexical_score"] = row.get("lexical_score")
+
+    results: list[RetrievalResult] = []
+    for row in merged.values():
+        vector_score = float(row.get("similarity") or 0.0)
+        lexical_score = float(row.get("lexical_score") or 0.0)
+        vector_component = max(0.0, min(1.0, (vector_score + 1.0) / 2.0))
+        hybrid_score = (0.65 * vector_component) + (0.35 * lexical_score)
+        enriched = dict(row)
+        enriched.update(
+            {
+                "lexical_score": lexical_score,
+                "hybrid_score": hybrid_score,
+                "ranking_method": "hybrid",
+            }
+        )
+        results.append(_result_from_vector_row(enriched))
+
+    results.sort(
+        key=lambda result: (
+            result.hybrid_score if result.hybrid_score is not None else float("-inf"),
+            result.similarity,
+            result.lexical_score if result.lexical_score is not None else 0.0,
+        ),
+        reverse=True,
+    )
+    return results[:top_k]
 
 
 def _trace_span(trace: object | None, name: str):
@@ -128,9 +191,10 @@ def retrieve_top_chunks(
     query: str,
     top_k: int = config.TOP_K,
     db_path: Path = config.VECTOR_DB_PATH,
+    metadata_db_path: Path | None = None,
     trace: object | None = None,
 ) -> list[RetrievalResult]:
-    """Embed a query and return the most similar stored chunks from LanceDB."""
+    """Embed a query and merge semantic and exact-term retrieval candidates."""
     if not query.strip():
         raise ValueError("Query must not be empty.")
 
@@ -143,9 +207,26 @@ def retrieve_top_chunks(
     except VectorStoreError as exc:
         raise RetrievalError(f"{exc}") from exc
 
-    results = [_result_from_vector_row(row) for row in rows]
+    lexical_rows: list[dict[str, object]] = []
+    if config.HYBRID_RETRIEVAL_ENABLED:
+        lexical_path = metadata_db_path
+        if lexical_path is None:
+            lexical_path = (
+                config.DATABASE_PATH
+                if db_path == config.VECTOR_DB_PATH
+                else db_path.parent / "rag.db"
+            )
+        lexical_rows = search_lexical_chunks(
+            query,
+            top_k=config.LEXICAL_CANDIDATE_K,
+            db_path=lexical_path,
+        )
+
+    results = _merge_hybrid_rows(rows, lexical_rows, top_k)
     if trace is not None and hasattr(trace, "set"):
-        trace.set("retrieval_backend", "lancedb")
+        trace.set("retrieval_backend", "hybrid" if config.HYBRID_RETRIEVAL_ENABLED else "vector")
+        trace.set("vector_retrieval_count", len(rows))
+        trace.set("lexical_retrieval_count", len(lexical_rows))
         trace.set("retrieval_count", len(results))
     return results
 

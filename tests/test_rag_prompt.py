@@ -151,6 +151,29 @@ def test_answer_query_allows_explicit_exact_details(
     assert str(response["answer"]).startswith("The final demo date is July 31, 2026.")
 
 
+def test_build_context_block_preserves_pdf_metadata_and_full_content() -> None:
+    result = RetrievalResult(
+        chunk_id=1,
+        source_name="guide.pdf",
+        chunk_index=0,
+        content="The Turkish installation instruction is complete and exact.",
+        similarity=0.9,
+        source_path=r"C:\docs\guide.pdf",
+        page_start=7,
+        page_end=7,
+        extraction_method="pymupdf",
+        heading="Installation",
+    )
+
+    context = rag.build_context_block([result])
+
+    assert "Page: 7" in context
+    assert "Heading: Installation" in context
+    assert "Extraction: pymupdf" in context
+    assert r"Path: C:\docs\guide.pdf" in context
+    assert result.content in context
+
+
 def test_answer_query_builds_messages_and_canonicalizes_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

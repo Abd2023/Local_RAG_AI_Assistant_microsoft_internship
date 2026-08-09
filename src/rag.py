@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 
@@ -47,7 +48,7 @@ STREET_ADDRESS_PATTERN = re.compile(
 
 SYSTEM_INSTRUCTION = """You are a local document Q&A assistant. Answer only using the provided context.
 If the answer is not in the context, say you do not know based on the available documents.
-Answer in one or two short sentences. Copy facts exactly as stated in the context; do not calculate, infer, repeat the question, or show reasoning.
+Answer directly in a concise response of up to six sentences. For exact fact questions, preserve names, numbers, dates, units, and wording from the context. For summary questions, combine only supported facts from the context; do not invent, infer unsupported details, or show reasoning.
 Every factual sentence must end with one or more exact bracketed labels copied from the context.
 Use only citation labels present in the context. Never invent a source label.
 Do not include a Sources section; the application adds canonical sources after verification."""
@@ -93,12 +94,34 @@ def _relevant_snippet(question: str, content: str, max_sentences: int = 3) -> st
 
 
 def build_context_block(results: list[RetrievalResult], question: str = "") -> str:
-    """Build a labeled context block from retrieved chunks."""
-    context_parts = []
+    """Build a labeled context block from complete retrieved chunks."""
+    context_parts: list[str] = []
+    remaining_chars = config.MAX_CONTEXT_CHARS
     for result in results:
         label = _context_source_label(result)
-        content = _relevant_snippet(question, result.content) if question else result.content
-        context_parts.append(f"[Source: {label}]\n{content}")
+        metadata = [f"[Source: {label}]"]
+        if result.page_start is not None:
+            page_label = (
+                str(result.page_start)
+                if result.page_end in {None, result.page_start}
+                else f"{result.page_start}-{result.page_end}"
+            )
+            metadata.append(f"Page: {page_label}")
+        if result.heading:
+            metadata.append(f"Heading: {result.heading}")
+        if result.extraction_method:
+            metadata.append(f"Extraction: {result.extraction_method}")
+        if result.source_path:
+            metadata.append(f"Path: {result.source_path}")
+
+        content = result.content.strip()
+        block = "\n".join([" | ".join(metadata), content])
+        if remaining_chars <= 0:
+            break
+        if len(block) > remaining_chars:
+            block = block[:remaining_chars].rsplit(" ", 1)[0].rstrip() + "\n[Context truncated]"
+        context_parts.append(block)
+        remaining_chars -= len(block) + 7
     return "\n\n---\n\n".join(context_parts)
 
 
@@ -109,7 +132,7 @@ def build_user_prompt(question: str, results: list[RetrievalResult]) -> str:
 If the answer is missing from the context, begin with: I do not know based on the available documents.
 Do not invent facts or source names.
 Return exactly two parts:
-Answer: one or two short sentences copied from the context. Do not calculate or explain your reasoning. End every factual sentence with an exact bracketed label copied from the context.
+Answer: a concise answer of up to six sentences grounded in the context. Preserve exact details when asked for them, and end every factual sentence with an exact bracketed label copied from the context.
 Sources: the application will add canonical source names after verification.
 
 Context:
@@ -138,6 +161,8 @@ def _chunk_debug_info(results: list[RetrievalResult]) -> list[dict[str, object]]
             "similarity": result.similarity,
             "vector_similarity": result.similarity,
             "rerank_score": result.rerank_score,
+            "lexical_score": result.lexical_score,
+            "hybrid_score": result.hybrid_score,
             "ranking_method": result.ranking_method,
             "similarity_percent": result.similarity * 100,
             "source_label": _display_source_label(result),
@@ -198,14 +223,69 @@ def _extractive_fallback(question: str, results: list[RetrievalResult]) -> str:
 
 def _low_confidence_answer(results: list[RetrievalResult]) -> str | None:
     """Return a deterministic no-answer response when retrieval is weak."""
-    if not results or results[0].similarity < config.RETRIEVAL_MIN_TOP_SCORE:
+    top_score = (
+        results[0].hybrid_score
+        if results and results[0].hybrid_score is not None
+        else results[0].similarity if results else 0.0
+    )
+    if not results or top_score < config.RETRIEVAL_MIN_TOP_SCORE:
         return "I do not know based on the available documents."
     return None
+
+
+def _retrieval_confidence(results: list[RetrievalResult]) -> float:
+    """Expose the bounded top hybrid score for API and UI consumers."""
+    if not results:
+        return 0.0
+    score = results[0].hybrid_score
+    if score is None:
+        score = (results[0].similarity + 1.0) / 2.0
+    return round(max(0.0, min(1.0, float(score))), 3)
 
 
 def _context_text(results: list[RetrievalResult]) -> str:
     """Return all retrieved content as one text block for deterministic guards."""
     return "\n\n".join(result.content for result in results)
+
+
+def _grounding_terms(text: str) -> set[str]:
+    """Return meaningful words and numeric tokens used by the grounding guard."""
+    return {
+        token
+        for token in re.findall(r"[\w]+", text.lower(), flags=re.UNICODE)
+        if token not in STOP_WORDS and (len(token) > 2 or token.isdigit())
+    }
+
+
+def _verify_claim_grounding(
+    claims: list[str],
+    results: list[RetrievalResult],
+) -> dict[str, object]:
+    """Check that cited claims share meaningful evidence with their source chunks."""
+    by_citation = {
+        citation_key(result.source_name, result.chunk_index): result
+        for result in results
+    }
+    unsupported: list[str] = []
+    for claim in claims:
+        citation_matches = re.findall(r"\[([^\[\]]+?)#(\d+)\]", claim)
+        cited_results = [
+            by_citation.get(citation_key(source.strip(), int(index)))
+            for source, index in citation_matches
+        ]
+        source_terms = _grounding_terms(
+            " ".join(result.content for result in cited_results if result is not None)
+        )
+        claim_terms = _grounding_terms(re.sub(r"\[[^\[\]]+?#\d+\]", "", claim))
+        overlap = claim_terms & source_terms
+        required_overlap = max(1, min(3, math.ceil(len(claim_terms) * 0.15)))
+        if not cited_results or not claim_terms or len(overlap) < required_overlap:
+            unsupported.append(claim)
+
+    return {
+        "verified": not unsupported,
+        "unsupported_claims": unsupported,
+    }
 
 
 def _contains_role_identity(context: str, role: str) -> bool:
@@ -309,6 +389,8 @@ def answer_query(
 
         guard_decision, no_answer = _guard_decision(question, retrieved_chunks)
         trace.set("guard_decision", guard_decision)
+        confidence = _retrieval_confidence(retrieved_chunks)
+        trace.set("confidence", confidence)
         if no_answer is not None:
             final_answer = _ensure_answer_has_sources(no_answer, sources)
             trace.update(
@@ -317,6 +399,10 @@ def answer_query(
                     "answer_length": len(final_answer),
                     "sources": sources,
                     "citation_verification": verify_answer(final_answer, []).as_dict(),
+                    "grounding_verification": {
+                        "verified": True,
+                        "unsupported_claims": [],
+                    },
                 }
             )
             trace.finish(status="ok", answer=final_answer)
@@ -325,6 +411,8 @@ def answer_query(
                 "sources": sources,
                 "retrieved_chunks": retrieved_debug,
                 "verification": verify_answer(final_answer, []).as_dict(),
+                "grounding": {"verified": True, "unsupported_claims": []},
+                "confidence": confidence,
                 "reranker_status": reranker_status,
                 "trace_id": trace.trace_id,
             }
@@ -363,16 +451,26 @@ def answer_query(
             flags=re.IGNORECASE,
         )
         verification = verify_answer(normalized_answer, allowed_citations)
+        grounding = _verify_claim_grounding(verification.claims, retrieved_chunks)
         citation_repaired = False
-        if not verification.verified and not verification.invalid_citations:
+        if (
+            not verification.verified or not grounding["verified"]
+        ) and not verification.invalid_citations:
             repaired_answer = _extractive_fallback(question, retrieved_chunks)
             repaired_verification = verify_answer(repaired_answer, allowed_citations)
-            if repaired_verification.verified:
+            repaired_grounding = _verify_claim_grounding(
+                repaired_verification.claims,
+                retrieved_chunks,
+            )
+            if repaired_verification.verified and repaired_grounding["verified"]:
                 verification = repaired_verification
+                grounding = repaired_grounding
                 citation_repaired = True
         trace.set("citation_repair_applied", citation_repaired)
         trace.set("citation_verification", verification.as_dict())
-        if verification.verified:
+        trace.set("grounding_verification", grounding)
+        trace.set("confidence", confidence)
+        if verification.verified and grounding["verified"]:
             final_answer = _ensure_answer_has_sources(verification.answer, sources)
         else:
             trace.set("guard_decision", "citation_verification_failed")
@@ -384,6 +482,8 @@ def answer_query(
             "sources": sources,
             "retrieved_chunks": retrieved_debug,
             "verification": verification.as_dict(),
+            "grounding": grounding,
+            "confidence": confidence,
             "citation_repair_applied": citation_repaired,
             "reranker_status": reranker_status,
             "trace_id": trace.trace_id,
