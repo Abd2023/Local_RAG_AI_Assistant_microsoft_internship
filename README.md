@@ -141,6 +141,17 @@ docker compose up --build -d backend frontend
 
 The first model pulls require internet access. After Docker images and model volumes are cached, normal querying runs locally without cloud inference. The backend rebuilds an empty Qdrant collection automatically on its first start.
 
+## Foundry Local GPU Notes
+
+Native Foundry runs use Phi-4-mini as the default chat model. Chat prefers the CUDA GPU variant when available, but embeddings use the CPU variant by default so query embedding does not occupy VRAM before Phi-4-mini loads. If the Phi-4-mini GPU variant still fails to load, the app retries the same `phi-4-mini` alias on CPU instead of falling back to a weaker chat model.
+
+Useful overrides:
+
+- `FOUNDRY_REQUIRE_CHAT_GPU=false`: use the Foundry CPU chat variant directly.
+- `FOUNDRY_REQUIRE_EMBEDDING_GPU=true`: force embedding on GPU.
+- `FOUNDRY_ALLOW_CPU_FALLBACK=false`: fail instead of retrying chat on CPU.
+- `FOUNDRY_REQUIRE_GPU=false`: legacy switch that disables GPU requirements for both chat and embeddings unless the more specific variables are set.
+
 ## OCR Notes
 
 PDF text extraction uses PyMuPDF. OCR is only attempted for sparse PDF pages that appear scanned and contain images.

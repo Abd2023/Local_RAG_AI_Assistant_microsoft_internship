@@ -24,6 +24,9 @@ def test_provider_selection_rejects_unknown_provider(monkeypatch: pytest.MonkeyP
 def test_configured_chat_model_defaults_to_phi4_mini() -> None:
     assert config.CHAT_MODEL_ALIAS == "phi-4-mini"
     assert config.OLLAMA_CHAT_MODEL == "phi4-mini"
+    assert config.REQUIRE_CHAT_GPU_MODELS is True
+    assert config.REQUIRE_EMBEDDING_GPU_MODELS is False
+    assert config.ALLOW_FOUNDRY_CPU_FALLBACK is True
     assert config.RERANKER_DEVICE == "cpu"
     assert config.CHAT_MAX_TOKENS == 500
 
@@ -100,3 +103,73 @@ def test_foundry_rejects_unregistered_gpu_provider(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(foundry_client.FoundryLocalException, match="could not be registered"):
         foundry_client.ensure_preferred_gpu_execution_provider()
+
+
+def test_foundry_chat_load_retries_same_model_on_cpu_after_gpu_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bool] = []
+
+    class FakeModel:
+        is_cached = True
+        is_loaded = False
+
+        def __init__(self, *, should_fail: bool) -> None:
+            self.should_fail = should_fail
+            self.unloaded = False
+
+        def load(self) -> None:
+            if self.should_fail:
+                raise RuntimeError("cuda allocation failed")
+            self.is_loaded = True
+
+        def unload(self) -> None:
+            self.unloaded = True
+
+    gpu_model = FakeModel(should_fail=True)
+    cpu_model = FakeModel(should_fail=False)
+
+    def fake_get_chat_model(_alias: str, *, require_gpu: bool) -> FakeModel:
+        calls.append(require_gpu)
+        return gpu_model if require_gpu else cpu_model
+
+    monkeypatch.setattr(foundry_client, "get_chat_model", fake_get_chat_model)
+
+    loaded = foundry_client.load_chat_model(
+        "phi-4-mini",
+        register_execution_providers=False,
+        require_gpu=True,
+        allow_cpu_fallback=True,
+    )
+
+    assert loaded is cpu_model
+    assert calls == [True, False]
+    assert gpu_model.unloaded is True
+
+
+def test_foundry_chat_load_reports_cpu_fallback_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingModel:
+        is_cached = True
+        is_loaded = False
+
+        def load(self) -> None:
+            raise RuntimeError("load failed")
+
+    monkeypatch.setattr(
+        foundry_client,
+        "get_chat_model",
+        lambda _alias, *, require_gpu: FailingModel(),
+    )
+
+    with pytest.raises(
+        foundry_client.FoundryLocalException,
+        match="CPU fallback for the same model alias also failed",
+    ):
+        foundry_client.load_chat_model(
+            "phi-4-mini",
+            register_execution_providers=False,
+            require_gpu=True,
+            allow_cpu_fallback=True,
+        )

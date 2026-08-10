@@ -21,6 +21,13 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_bool_or_none(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -41,7 +48,14 @@ VECTOR_BACKEND = os.getenv("VECTOR_BACKEND", "lancedb").strip().lower()
 EMBEDDING_MODEL_ALIAS = os.getenv("FOUNDRY_EMBEDDING_MODEL", "qwen3-embedding-0.6b")
 CHAT_MODEL_ALIAS = os.getenv("FOUNDRY_CHAT_MODEL", "phi-4-mini")
 PREFERRED_EXECUTION_PROVIDER = os.getenv("FOUNDRY_EXECUTION_PROVIDER", "CUDAExecutionProvider")
-REQUIRE_GPU_MODELS = _env_bool("FOUNDRY_REQUIRE_GPU", True)
+_LEGACY_REQUIRE_GPU_MODELS = _env_bool_or_none("FOUNDRY_REQUIRE_GPU")
+REQUIRE_GPU_MODELS = True if _LEGACY_REQUIRE_GPU_MODELS is None else _LEGACY_REQUIRE_GPU_MODELS
+REQUIRE_CHAT_GPU_MODELS = _env_bool("FOUNDRY_REQUIRE_CHAT_GPU", REQUIRE_GPU_MODELS)
+REQUIRE_EMBEDDING_GPU_MODELS = _env_bool(
+    "FOUNDRY_REQUIRE_EMBEDDING_GPU",
+    False if _LEGACY_REQUIRE_GPU_MODELS is None else REQUIRE_GPU_MODELS,
+)
+ALLOW_FOUNDRY_CPU_FALLBACK = _env_bool("FOUNDRY_ALLOW_CPU_FALLBACK", True)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")

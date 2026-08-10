@@ -116,9 +116,41 @@ def _select_preferred_model_variant(model: Any, *, require_gpu: bool) -> Any:
     )
 
 
+def _download_and_load_model(
+    model: Any,
+    progress_callback: ProgressCallback | None = None,
+) -> Any:
+    if not model.is_cached:
+        model.download(progress_callback=progress_callback)
+    if not model.is_loaded:
+        model.load()
+    return model
+
+
+def _try_unload_model(model: Any | None) -> None:
+    if model is None:
+        return
+    unload = getattr(model, "unload", None)
+    if callable(unload):
+        try:
+            unload()
+        except Exception:
+            pass
+
+
+def _load_cpu_fallback_model(
+    *,
+    model_alias: str,
+    get_model: Callable[..., Any],
+    progress_callback: ProgressCallback | None,
+) -> Any:
+    cpu_model = get_model(model_alias, require_gpu=False)
+    return _download_and_load_model(cpu_model, progress_callback=progress_callback)
+
+
 def get_chat_model(
     model_alias: str = config.CHAT_MODEL_ALIAS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_CHAT_GPU_MODELS,
 ) -> Any:
     """Return the configured chat model from the Foundry Local catalog."""
     if require_gpu:
@@ -133,7 +165,7 @@ def get_chat_model(
 
 def get_embedding_model(
     model_alias: str = config.EMBEDDING_MODEL_ALIAS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
 ) -> Any:
     """Return the configured embedding model from the Foundry Local catalog."""
     if require_gpu:
@@ -149,24 +181,37 @@ def get_embedding_model(
 def load_chat_model(
     model_alias: str = config.CHAT_MODEL_ALIAS,
     progress_callback: ProgressCallback | None = None,
-    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    register_execution_providers: bool = config.REQUIRE_CHAT_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_CHAT_GPU_MODELS,
+    allow_cpu_fallback: bool = config.ALLOW_FOUNDRY_CPU_FALLBACK,
 ) -> IModel:
     """Download and load the configured chat model for local inference."""
+    model = None
     try:
         if register_execution_providers:
             ensure_preferred_gpu_execution_provider()
 
         model = get_chat_model(model_alias, require_gpu=require_gpu)
-        if not model.is_cached:
-            model.download(progress_callback=progress_callback)
-        if not model.is_loaded:
-            model.load()
-        return model
+        return _download_and_load_model(model, progress_callback=progress_callback)
     except Exception as exc:
+        if require_gpu and allow_cpu_fallback:
+            _try_unload_model(model)
+            try:
+                return _load_cpu_fallback_model(
+                    model_alias=model_alias,
+                    get_model=get_chat_model,
+                    progress_callback=progress_callback,
+                )
+            except Exception as cpu_exc:
+                raise FoundryLocalException(
+                    f"Unable to load configured Foundry Local chat model alias '{model_alias}'. "
+                    "The GPU variant failed, then the CPU fallback for the same model alias also failed. "
+                    "Close other GPU-heavy apps, or set FOUNDRY_REQUIRE_CHAT_GPU=false to use CPU directly. "
+                    f"GPU details: {exc}. CPU fallback details: {cpu_exc}"
+                ) from cpu_exc
         raise FoundryLocalException(
             f"Unable to load configured Foundry Local chat model alias '{model_alias}'. "
-            "Download/cache the model in Foundry Local and verify its GPU variant is available. "
+            "Download/cache the model in Foundry Local and verify the selected variant is available. "
             f"Details: {exc}"
         ) from exc
 
@@ -174,8 +219,8 @@ def load_chat_model(
 def load_embedding_model(
     model_alias: str = config.EMBEDDING_MODEL_ALIAS,
     progress_callback: ProgressCallback | None = None,
-    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    register_execution_providers: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
 ) -> IModel:
     """Download and load the configured embedding model for local inference."""
     try:
@@ -183,15 +228,11 @@ def load_embedding_model(
             ensure_preferred_gpu_execution_provider()
 
         model = get_embedding_model(model_alias, require_gpu=require_gpu)
-        if not model.is_cached:
-            model.download(progress_callback=progress_callback)
-        if not model.is_loaded:
-            model.load()
-        return model
+        return _download_and_load_model(model, progress_callback=progress_callback)
     except Exception as exc:
         raise FoundryLocalException(
             f"Unable to load configured Foundry Local embedding model alias '{model_alias}'. "
-            "Download/cache the model in Foundry Local and verify its GPU variant is available. "
+            "Download/cache the model in Foundry Local and verify the selected variant is available. "
             f"Details: {exc}"
         ) from exc
 
@@ -201,8 +242,8 @@ def complete_chat_prompt(
     model_alias: str = config.CHAT_MODEL_ALIAS,
     max_tokens: int = config.CHAT_MAX_TOKENS,
     temperature: float = 0.2,
-    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    register_execution_providers: bool = config.REQUIRE_CHAT_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_CHAT_GPU_MODELS,
 ) -> str:
     """Send one user prompt to the local chat model and return the response text."""
     if config.RAG_PROVIDER != "foundry":
@@ -236,8 +277,8 @@ def complete_chat_messages(
     model_alias: str = config.CHAT_MODEL_ALIAS,
     max_tokens: int = config.CHAT_MAX_TOKENS,
     temperature: float = 0.1,
-    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    register_execution_providers: bool = config.REQUIRE_CHAT_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_CHAT_GPU_MODELS,
 ) -> str:
     """Send chat messages to the local chat model and return the response text."""
     if config.RAG_PROVIDER != "foundry":
@@ -261,8 +302,8 @@ def complete_chat_messages(
 def generate_embedding(
     text: str,
     model_alias: str = config.EMBEDDING_MODEL_ALIAS,
-    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    register_execution_providers: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
 ) -> list[float]:
     """Generate one local embedding vector for a single text string."""
     if config.RAG_PROVIDER != "foundry":
@@ -283,8 +324,8 @@ def generate_embedding(
 def generate_embeddings(
     texts: list[str],
     model_alias: str = config.EMBEDDING_MODEL_ALIAS,
-    register_execution_providers: bool = config.REQUIRE_GPU_MODELS,
-    require_gpu: bool = config.REQUIRE_GPU_MODELS,
+    register_execution_providers: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
+    require_gpu: bool = config.REQUIRE_EMBEDDING_GPU_MODELS,
 ) -> list[list[float]]:
     """Generate local embedding vectors for multiple text strings."""
     if config.RAG_PROVIDER != "foundry":
