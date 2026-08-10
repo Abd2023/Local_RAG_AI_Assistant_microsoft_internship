@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from src import config
@@ -40,3 +42,61 @@ def test_foundry_model_load_failure_names_the_configured_alias(
             register_execution_providers=False,
             require_gpu=False,
         )
+
+
+def test_foundry_selects_cpu_variant_when_gpu_is_not_required() -> None:
+    gpu = SimpleNamespace(
+        id="gpu",
+        info=SimpleNamespace(
+            runtime=SimpleNamespace(
+                device_type="GPU",
+                execution_provider="CUDAExecutionProvider",
+            )
+        ),
+    )
+    cpu = SimpleNamespace(
+        id="cpu",
+        info=SimpleNamespace(
+            runtime=SimpleNamespace(
+                device_type="CPU",
+                execution_provider="CPUExecutionProvider",
+            )
+        ),
+    )
+
+    class FakeModel:
+        alias = "test-model"
+        variants = [gpu, cpu]
+
+        def __init__(self) -> None:
+            self.selected = None
+
+        def select_variant(self, variant) -> None:
+            self.selected = variant
+
+    model = FakeModel()
+
+    assert foundry_client._select_preferred_model_variant(model, require_gpu=False) is model
+    assert model.selected is cpu
+
+
+def test_foundry_rejects_unregistered_gpu_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    execution_provider = SimpleNamespace(
+        name=config.PREFERRED_EXECUTION_PROVIDER,
+        is_registered=False,
+    )
+
+    class FakeManager:
+        def discover_eps(self):
+            return [execution_provider]
+
+    monkeypatch.setattr(foundry_client, "platform", SimpleNamespace(system=lambda: "Windows"))
+    monkeypatch.setattr(foundry_client, "get_manager", lambda: FakeManager())
+    monkeypatch.setattr(
+        foundry_client,
+        "download_and_register_execution_providers",
+        lambda **_kwargs: SimpleNamespace(status="registration failed"),
+    )
+
+    with pytest.raises(foundry_client.FoundryLocalException, match="could not be registered"):
+        foundry_client.ensure_preferred_gpu_execution_provider()

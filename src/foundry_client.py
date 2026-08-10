@@ -57,7 +57,17 @@ def ensure_preferred_gpu_execution_provider() -> None:
             f"Preferred execution provider not discovered: {config.PREFERRED_EXECUTION_PROVIDER}"
         )
     if not preferred.is_registered:
-        download_and_register_execution_providers(names=[config.PREFERRED_EXECUTION_PROVIDER])
+        result = download_and_register_execution_providers(names=[config.PREFERRED_EXECUTION_PROVIDER])
+        refreshed = next(
+            (ep for ep in manager.discover_eps() if ep.name == config.PREFERRED_EXECUTION_PROVIDER),
+            None,
+        )
+        if refreshed is None or not refreshed.is_registered:
+            details = getattr(result, "status", result)
+            raise FoundryLocalException(
+                "Preferred execution provider could not be registered: "
+                f"{config.PREFERRED_EXECUTION_PROVIDER}. Details: {details}"
+            )
 
 
 def _is_preferred_gpu_variant(model: Any) -> bool:
@@ -70,13 +80,23 @@ def _is_preferred_gpu_variant(model: Any) -> bool:
     )
 
 
-def _select_preferred_model_variant(model: Any, *, require_gpu: bool) -> Any:
-    gpu_variant = next((variant for variant in model.variants if _is_preferred_gpu_variant(variant)), None)
-    if gpu_variant is not None:
-        model.select_variant(gpu_variant)
-        return model
+def _is_cpu_variant(model: Any) -> bool:
+    runtime = model.info.runtime
+    if runtime is None:
+        return False
+    return (
+        str(runtime.device_type).upper() == "CPU"
+        or str(runtime.execution_provider).upper() == "CPUEXECUTIONPROVIDER"
+    )
 
+
+def _select_preferred_model_variant(model: Any, *, require_gpu: bool) -> Any:
     if require_gpu:
+        gpu_variant = next((variant for variant in model.variants if _is_preferred_gpu_variant(variant)), None)
+        if gpu_variant is not None:
+            model.select_variant(gpu_variant)
+            return model
+
         variant_ids = ", ".join(variant.id for variant in model.variants)
         raise FoundryLocalException(
             "No GPU variant found for model alias "
@@ -84,7 +104,16 @@ def _select_preferred_model_variant(model: Any, *, require_gpu: bool) -> Any:
             f"Available variants: {variant_ids}"
         )
 
-    return model
+    cpu_variant = next((variant for variant in model.variants if _is_cpu_variant(variant)), None)
+    if cpu_variant is not None:
+        model.select_variant(cpu_variant)
+        return model
+
+    variant_ids = ", ".join(variant.id for variant in model.variants)
+    raise FoundryLocalException(
+        "No CPU variant found for model alias "
+        f"'{model.alias}'. Available variants: {variant_ids}"
+    )
 
 
 def get_chat_model(
