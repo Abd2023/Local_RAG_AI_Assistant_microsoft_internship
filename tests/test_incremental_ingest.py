@@ -1,6 +1,12 @@
 ﻿from pathlib import Path
 
-from src.ingest import add_document_file, add_document_files, ingest_documents
+from src.ingest import (
+    add_document_file,
+    add_document_files,
+    ingest_documents,
+    replace_document_files,
+    reset_knowledge_base,
+)
 from src.storage import count_chunks, fetch_all_chunks
 from src.vector_store import count_vectors
 
@@ -115,3 +121,65 @@ def test_add_document_files_recursively_stages_supported_files_in_one_pass(
     assert (destination / "one.md").read_text(encoding="utf-8") == "one"
     assert (destination / "two.txt").read_text(encoding="utf-8") == "two"
     assert calls == [destination.resolve()]
+
+
+def test_reset_knowledge_base_clears_metadata_vectors_and_uploads(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    source = uploads / "handbook.md"
+    source.write_text("# Handbook\n\nThe daily standup starts at 10:00 AM.", encoding="utf-8")
+    (uploads / ".gitkeep").write_text("", encoding="utf-8")
+    db_path = tmp_path / "rag.db"
+    vector_db_path = tmp_path / "lancedb"
+
+    monkeypatch.setattr("src.ingest.generate_embeddings", lambda texts: [[1.0, 0.0] for _ in texts])
+
+    ingest_documents(uploads, db_path=db_path, vector_db_path=vector_db_path)
+    summary = reset_knowledge_base(
+        db_path=db_path,
+        vector_db_path=vector_db_path,
+        uploads_path=uploads,
+    )
+
+    assert summary["removed_uploads"] == 1
+    assert summary["final_rows"] == 0
+    assert summary["final_vectors"] == 0
+    assert count_chunks(db_path) == 0
+    assert count_vectors(vector_db_path) == 0
+    assert not source.exists()
+    assert (uploads / ".gitkeep").exists()
+
+
+def test_replace_document_files_starts_fresh_and_indexes_only_new_docs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    fresh = incoming / "fresh.md"
+    fresh.write_text("# Fresh\n\nThe new answer is available.", encoding="utf-8")
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    stale = uploads / "stale.md"
+    stale.write_text("stale", encoding="utf-8")
+    db_path = tmp_path / "rag.db"
+    vector_db_path = tmp_path / "lancedb"
+
+    monkeypatch.setattr("src.ingest.generate_embeddings", lambda texts: [[1.0, 0.0] for _ in texts])
+
+    result = replace_document_files(
+        [incoming],
+        docs_path=uploads,
+        db_path=db_path,
+        vector_db_path=vector_db_path,
+    )
+
+    assert result["reset"]["removed_uploads"] == 1
+    assert result["indexed_files"] == 1
+    assert result["final_rows"] == 1
+    assert result["final_vectors"] == 1
+    assert not stale.exists()
+    assert (uploads / "fresh.md").exists()

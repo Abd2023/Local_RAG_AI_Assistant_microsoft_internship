@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("setup", "ingest", "rebuild", "upload", "cli", "ask", "eval", "traces", "api", "test", "status", "help")]
+    [ValidateSet("setup", "ingest", "rebuild", "upload", "clean", "cli", "ask", "eval", "traces", "api", "test", "status", "help")]
     [string]$Command = "cli",
 
     [Parameter(Position = 1, ValueFromRemainingArguments = $true)]
@@ -26,6 +26,7 @@ function Show-Help {
     Write-Host "  .\run.ps1 ingest"
     Write-Host "  .\run.ps1 rebuild"
     Write-Host "  .\run.ps1 upload ""C:\path\to\document.pdf"""
+    Write-Host "  .\run.ps1 clean [""C:\path\to\documents-folder""]"
     Write-Host "  .\run.ps1 cli"
     Write-Host "  .\run.ps1 ask ""What time does the daily standup start?"""
     Write-Host "  .\run.ps1 eval"
@@ -39,6 +40,7 @@ function Show-Help {
     Write-Host "  ingest  incrementally updates data\rag.db and data\lancedb."
     Write-Host "  rebuild fully rebuilds metadata and vectors."
     Write-Host "  upload  copies one supported document and indexes it immediately."
+    Write-Host "  clean   clears stored documents, metadata, and vectors; with a path, indexes a fresh corpus."
     Write-Host "  cli     starts the interactive Q&A assistant."
     Write-Host "  ask     runs one question and exits."
     Write-Host "  eval    runs the manual evaluation questions and saves a JSON report."
@@ -114,6 +116,18 @@ switch ($Command) {
         Write-Host "Adding and indexing $DocumentPath..."
         Write-Host "Foundry Local may download or load the embedding model on first run."
         Invoke-ProjectPython @("-B", "-m", "src.ingest", $DocumentPath)
+    }
+    "clean" {
+        $DocumentPath = ($RemainingArgs -join " ").Trim()
+        if ($DocumentPath) {
+            Write-Host "Clearing the current knowledge base and indexing $DocumentPath..."
+            Write-Host "Foundry Local may download or load the embedding model on first run."
+            Invoke-ProjectPython @("-B", "-m", "src.ingest", "--replace", $DocumentPath)
+        }
+        else {
+            Write-Host "Clearing stored documents, metadata, and vectors..."
+            Invoke-ProjectPython @("-B", "-m", "src.ingest", "--clean")
+        }
     }
     "cli" {
         Write-Host "Starting the Local RAG AI Assistant..."

@@ -11,8 +11,6 @@ data/lancedb/
 data/traces/
 data/evaluations/
 # Uploaded local documents are part of the runtime corpus, not source code.
-data/sample_docs/*
-!data/sample_docs/.gitkeep
 data/uploads/*
 !data/uploads/.gitkeep
 *.sqlite

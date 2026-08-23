@@ -585,6 +585,24 @@ def add_document_files(
     """Stage multiple files and run one incremental indexing pass."""
     sources = _expand_upload_sources(source_paths)
     destination_dir = (docs_path or config.UPLOADS_PATH).resolve()
+    staged = _stage_document_sources(sources, destination_dir)
+
+    summary = ingest_documents(
+        None if docs_path is None else destination_dir,
+    )
+    return {
+        "staged": staged,
+        "document_name": staged[0]["document_name"],
+        "document_path": staged[0]["document_path"],
+        **summary,
+    }
+
+
+def _stage_document_sources(
+    sources: Sequence[Path],
+    destination_dir: Path,
+) -> list[dict[str, str]]:
+    """Copy supported source files into the upload corpus."""
     destination_dir.mkdir(parents=True, exist_ok=True)
     staged: list[dict[str, str]] = []
     reserved: set[Path] = set()
@@ -606,16 +624,7 @@ def add_document_files(
                 "document_path": str(destination),
             }
         )
-
-    summary = ingest_documents(
-        None if docs_path is None else destination_dir,
-    )
-    return {
-        "staged": staged,
-        "document_name": staged[0]["document_name"],
-        "document_path": staged[0]["document_path"],
-        **summary,
-    }
+    return staged
 
 
 def add_document_file(
@@ -624,6 +633,93 @@ def add_document_file(
 ) -> dict[str, object]:
     """Copy one local document into the upload corpus and index it."""
     return add_document_files([source_path], docs_path=docs_path)
+
+
+def clear_uploaded_documents(docs_path: Path | None = None) -> list[str]:
+    """Remove staged uploaded documents while preserving placeholders."""
+    uploads_dir = (docs_path or config.UPLOADS_PATH).resolve()
+    if not uploads_dir.exists():
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        return []
+
+    removed: list[str] = []
+    for path in sorted(uploads_dir.rglob("*"), key=str, reverse=True):
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            path.unlink()
+            removed.append(str(path))
+
+    for directory in sorted(
+        [path for path in uploads_dir.rglob("*") if path.is_dir()],
+        key=str,
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
+def reset_knowledge_base(
+    *,
+    db_path: Path = config.DATABASE_PATH,
+    vector_db_path: Path = config.VECTOR_DB_PATH,
+    remove_uploads: bool = True,
+    uploads_path: Path | None = None,
+) -> dict[str, object]:
+    """Clear metadata, vectors, and optionally staged uploaded documents."""
+    removed_uploads = (
+        clear_uploaded_documents(uploads_path)
+        if remove_uploads
+        else []
+    )
+    connection = connect(db_path)
+    try:
+        create_chunks_table(connection)
+        clear_all_metadata(connection)
+        connection.commit()
+    finally:
+        connection.close()
+
+    drop_vector_table(vector_db_path)
+    lexical_indexed = rebuild_lexical_index(db_path)
+    return {
+        "removed_uploads": len(removed_uploads),
+        "removed_upload_paths": removed_uploads,
+        "lexical_indexed": lexical_indexed,
+        "final_rows": count_chunks(db_path),
+        "final_vectors": count_vectors(vector_db_path),
+    }
+
+
+def replace_document_files(
+    source_paths: Sequence[Path],
+    docs_path: Path | None = None,
+    *,
+    db_path: Path = config.DATABASE_PATH,
+    vector_db_path: Path = config.VECTOR_DB_PATH,
+) -> dict[str, object]:
+    """Clear the existing uploaded corpus, then stage and index new documents."""
+    sources = _expand_upload_sources(source_paths)
+    destination_dir = (docs_path or config.UPLOADS_PATH).resolve()
+    reset_summary = reset_knowledge_base(
+        db_path=db_path,
+        vector_db_path=vector_db_path,
+        uploads_path=destination_dir,
+    )
+    staged = _stage_document_sources(sources, destination_dir)
+    summary = ingest_documents(
+        destination_dir,
+        db_path=db_path,
+        vector_db_path=vector_db_path,
+    )
+    return {
+        "reset": reset_summary,
+        "staged": staged,
+        "document_name": staged[0]["document_name"],
+        "document_path": staged[0]["document_path"],
+        **summary,
+    }
 
 
 def main() -> None:
@@ -635,9 +731,31 @@ def main() -> None:
         help="Copy one local document into the knowledge base before indexing it.",
     )
     parser.add_argument("--rebuild", action="store_true", help="Rebuild all metadata and vectors.")
+    parser.add_argument("--clean", action="store_true", help="Clear metadata, vectors, and uploaded documents.")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Clear uploaded documents, then stage and index the provided document or directory.",
+    )
     args = parser.parse_args()
 
-    if args.document:
+    if args.clean:
+        if args.document:
+            parser.error("--clean does not accept a document path. Use --replace for a fresh corpus.")
+        summary = reset_knowledge_base()
+        print("Knowledge base cleared")
+        print(f"Removed uploaded documents: {summary['removed_uploads']}")
+        print(f"Lexical index ready: {summary['lexical_indexed']}")
+        print(f"Final SQLite chunk rows: {summary['final_rows']}")
+        print(f"Final {config.VECTOR_BACKEND} vector rows: {summary['final_vectors']}")
+        return
+
+    if args.replace:
+        if not args.document:
+            parser.error("--replace requires a document or directory path.")
+        summary = replace_document_files([Path(args.document)])
+        print(f"Replaced corpus with documents: {len(summary['staged'])}")
+    elif args.document:
         summary = add_document_file(Path(args.document))
         print(f"Added documents: {len(summary['staged'])}")
     else:

@@ -26,9 +26,11 @@ def test_configured_chat_model_defaults_to_phi4_mini() -> None:
     assert config.OLLAMA_CHAT_MODEL == "phi4-mini"
     assert config.REQUIRE_CHAT_GPU_MODELS is True
     assert config.REQUIRE_EMBEDDING_GPU_MODELS is False
-    assert config.ALLOW_FOUNDRY_CPU_FALLBACK is True
+    assert config.ALLOW_FOUNDRY_CPU_FALLBACK is False
+    assert config.UNLOAD_EMBEDDING_MODEL_AFTER_USE is False
+    assert config.UNLOAD_CHAT_MODEL_AFTER_USE is True
     assert config.RERANKER_DEVICE == "cpu"
-    assert config.CHAT_MAX_TOKENS == 500
+    assert config.CHAT_MAX_TOKENS == 220
 
 
 def test_foundry_model_load_failure_names_the_configured_alias(
@@ -173,3 +175,60 @@ def test_foundry_chat_load_reports_cpu_fallback_failure(
             require_gpu=True,
             allow_cpu_fallback=True,
         )
+
+
+def test_foundry_unloads_embedding_model_after_single_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeEmbeddingClient:
+        def generate_embedding(self, _text: str):
+            return SimpleNamespace(data=[SimpleNamespace(embedding=[1.0, 2.0])])
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.unloaded = False
+
+        def get_embedding_client(self) -> FakeEmbeddingClient:
+            return FakeEmbeddingClient()
+
+        def unload(self) -> None:
+            self.unloaded = True
+
+    model = FakeModel()
+    monkeypatch.setattr(config, "RAG_PROVIDER", "foundry")
+    monkeypatch.setattr(config, "UNLOAD_EMBEDDING_MODEL_AFTER_USE", True)
+    monkeypatch.setattr(foundry_client, "load_embedding_model", lambda *_args, **_kwargs: model)
+
+    assert foundry_client.generate_embedding("hello") == [1.0, 2.0]
+    assert model.unloaded is True
+
+
+def test_foundry_unloads_chat_model_after_chat_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeChatClient:
+        def __init__(self) -> None:
+            self.settings = SimpleNamespace(max_tokens=None, temperature=None)
+
+        def complete_chat(self, _messages):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="hello"))]
+            )
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.unloaded = False
+
+        def get_chat_client(self) -> FakeChatClient:
+            return FakeChatClient()
+
+        def unload(self) -> None:
+            self.unloaded = True
+
+    model = FakeModel()
+    monkeypatch.setattr(config, "RAG_PROVIDER", "foundry")
+    monkeypatch.setattr(config, "UNLOAD_CHAT_MODEL_AFTER_USE", True)
+    monkeypatch.setattr(foundry_client, "load_chat_model", lambda *_args, **_kwargs: model)
+
+    assert foundry_client.complete_chat_messages([{"role": "user", "content": "hello"}]) == "hello"
+    assert model.unloaded is True

@@ -256,20 +256,24 @@ def complete_chat_prompt(
         register_execution_providers=register_execution_providers,
         require_gpu=require_gpu,
     )
-    chat_client = model.get_chat_client()
-    chat_client.settings.max_tokens = max_tokens
-    chat_client.settings.temperature = temperature
+    try:
+        chat_client = model.get_chat_client()
+        chat_client.settings.max_tokens = max_tokens
+        chat_client.settings.temperature = temperature
 
-    completion = chat_client.complete_chat(
-        [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ]
-    )
+        completion = chat_client.complete_chat(
+            [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+        )
 
-    return completion.choices[0].message.content or ""
+        return completion.choices[0].message.content or ""
+    finally:
+        if config.UNLOAD_CHAT_MODEL_AFTER_USE:
+            _try_unload_model(model)
 
 
 def complete_chat_messages(
@@ -291,12 +295,16 @@ def complete_chat_messages(
         register_execution_providers=register_execution_providers,
         require_gpu=require_gpu,
     )
-    chat_client = model.get_chat_client()
-    chat_client.settings.max_tokens = max_tokens
-    chat_client.settings.temperature = temperature
+    try:
+        chat_client = model.get_chat_client()
+        chat_client.settings.max_tokens = max_tokens
+        chat_client.settings.temperature = temperature
 
-    completion = chat_client.complete_chat(messages)
-    return completion.choices[0].message.content or ""
+        completion = chat_client.complete_chat(messages)
+        return completion.choices[0].message.content or ""
+    finally:
+        if config.UNLOAD_CHAT_MODEL_AFTER_USE:
+            _try_unload_model(model)
 
 
 def generate_embedding(
@@ -316,9 +324,13 @@ def generate_embedding(
         register_execution_providers=register_execution_providers,
         require_gpu=require_gpu,
     )
-    embedding_client = model.get_embedding_client()
-    response = embedding_client.generate_embedding(text)
-    return list(response.data[0].embedding)
+    try:
+        embedding_client = model.get_embedding_client()
+        response = embedding_client.generate_embedding(text)
+        return list(response.data[0].embedding)
+    finally:
+        if config.UNLOAD_EMBEDDING_MODEL_AFTER_USE:
+            _try_unload_model(model)
 
 
 def generate_embeddings(
@@ -338,9 +350,13 @@ def generate_embeddings(
         register_execution_providers=register_execution_providers,
         require_gpu=require_gpu,
     )
-    embedding_client = model.get_embedding_client()
-    response = embedding_client.generate_embeddings(texts)
-    return [list(item.embedding) for item in response.data]
+    try:
+        embedding_client = model.get_embedding_client()
+        response = embedding_client.generate_embeddings(texts)
+        return [list(item.embedding) for item in response.data]
+    finally:
+        if config.UNLOAD_EMBEDDING_MODEL_AFTER_USE:
+            _try_unload_model(model)
 
 
 if __name__ == "__main__":

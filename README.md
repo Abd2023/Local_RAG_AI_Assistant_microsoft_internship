@@ -4,14 +4,31 @@ Offline document Q&A assistant built with Microsoft Foundry Local, Python, SQLit
 
 The project answers questions from local documents only. It retrieves relevant chunks, builds a grounded prompt, runs a local chat model, returns sources, and records local traces for debugging.
 
+## In Simple Language
+
+This project is a private question-answering assistant for your own files.
+
+You give it Markdown, text, PDF, or Word files. It breaks those documents into small pieces, finds the pieces related to a question, and asks a local AI model to answer using only those pieces. During normal use, document text does not need to be sent to a cloud AI service.
+
+The important idea is RAG: **retrieve relevant information first, then generate an answer from that information**. If the documents do not contain an answer, the assistant is instructed to say that it does not know instead of inventing a fact.
+
+## What You Can Demonstrate
+
+- Upload local `.md`, `.txt`, `.pdf`, or `.docx` documents.
+- Ask questions through the CLI or the browser interface.
+- See retrieved source documents and chunk metadata.
+- Get grounded answers with validated source citations.
+- Test answerable, unanswerable, and edge-case questions.
+- Run the pipeline locally after the required packages and models have been downloaded.
+
 ## Current Capabilities
 
-- CLI question answering with local Foundry Local or Ollama models.
+- CLI question answering with Microsoft Foundry Local and the configured Phi chat model.
 - Markdown, text, PDF, and DOCX ingestion.
 - Incremental indexing that skips unchanged files and removes deleted documents.
 - Hybrid semantic plus SQLite FTS5 lexical retrieval for exact names, numbers, dates, and terminology.
 - Full-chunk prompts with PDF page, heading, extraction method, and source-path metadata.
-- Phi-4-mini chat defaults: `phi-4-mini` through Foundry Local and `phi4-mini` through Ollama.
+- Phi-4-mini chat default: `phi-4-mini` through Foundry Local.
 - SQLite metadata storage at `data/rag.db`.
 - LanceDB vector storage at `data/lancedb`.
 - Local JSONL traces at `data/traces`.
@@ -33,6 +50,17 @@ cd C:\fun_project\microsoft_internship\project
 .\run.ps1 cli
 ```
 
+`setup` creates the Python environment and installs the dependencies. `rebuild` indexes the six sample documents in `data/sample_docs`. `cli` starts the interactive assistant.
+
+For a fresh clone, the first model download may require internet access. After the models are cached, normal questions can run locally. If the machine does not have a supported GPU, try the CPU configuration before rebuilding:
+
+```powershell
+$env:FOUNDRY_REQUIRE_CHAT_GPU = "false"
+$env:FOUNDRY_REQUIRE_EMBEDDING_GPU = "false"
+.\run.ps1 rebuild
+.\run.ps1 cli
+```
+
 Ask one question without starting the interactive CLI:
 
 ```powershell
@@ -48,6 +76,22 @@ Add a new local document and index it immediately:
 
 Uploads support `.md`, `.txt`, `.pdf`, and `.docx`. The file is copied into the ignored `data\uploads` directory, then the normal incremental pipeline extracts text, runs OCR when required, chunks the content, creates embeddings, updates both search indexes, and records metadata. Re-uploading an unchanged file skips embedding; a changed file replaces its chunks and vectors.
 
+To start over with a fresh document set, use `clean`:
+
+```powershell
+.\run.ps1 clean
+.\run.ps1 clean "C:\path\to\documents-folder"
+```
+
+The interactive CLI has the same behavior:
+
+```text
+Question> /clean
+Question> /clean 'C:\path\documents-folder'
+```
+
+`/clean` removes staged uploaded documents, clears SQLite metadata, clears vector rows, and rebuilds the empty lexical index. `/clean <path>` does that first, then recursively stages and indexes the new `.pdf`, `.docx`, `.md`, and `.txt` documents from the path.
+
 The interactive CLI accepts one path, multiple quoted paths, or a recursive directory:
 
 ```text
@@ -59,11 +103,41 @@ Question> What are the main requirements in this document?
 
 The directory form recursively includes `.pdf`, `.docx`, `.md`, and `.txt` files and performs one combined indexing pass. Failed files are reported without blocking valid files. Upload commands never call the chat model.
 
+## Run the Browser Interface
+
+Start the backend in one terminal from the project root:
+
+```powershell
+.\run.ps1 api
+```
+
+Install and start the React frontend in a second terminal:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. The page lets you upload documents, ask questions, and inspect retrieved evidence, confidence, citations, and trace IDs.
+
 Run tests:
 
 ```powershell
 .\run.ps1 test
 ```
+
+## Short Video Demo
+
+For a 3–5 minute screen recording in Turkish, use [docs/video_demo_tr.md](docs/video_demo_tr.md). It includes the speaking script, architecture explanation, upload flow, answerable and unanswerable questions, and the “what I learned” section. The small files in `demo_data` are safe, deterministic documents for the live upload demonstration.
+
+## Screenshots
+
+Screenshots can be added here later. Suggested files are `docs/images/web-ui.png`, `docs/images/uploaded-documents.png`, and `docs/images/grounded-answer.png`.
+
+<!-- Example:
+![Local RAG browser interface](docs/images/web-ui.png)
+-->
 
 Run the manual evaluation set and inspect traces:
 
@@ -85,6 +159,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1 cli
 - `.\\run.ps1 ingest`: incrementally update changed documents.
 - `.\\run.ps1 rebuild`: fully rebuild SQLite metadata and LanceDB vectors.
 - `.\\run.ps1 upload "path"`: copy one supported document into `data\\uploads` and index it immediately.
+- `.\\run.ps1 clean ["path"]`: clear uploaded documents, metadata, and vectors; with a path, index a fresh corpus.
 - `.\\run.ps1 cli`: start the interactive assistant.
 - `.\\run.ps1 ask "question"`: ask one question and exit.
 - `.\\run.ps1 eval`: run the 10-question acceptance suite (5 answerable, 3 unanswerable, 2 edge cases).
@@ -100,7 +175,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1 cli
 data/sample_docs + data/uploads
   -> document loaders (.md, .txt, .pdf, .docx)
   -> chunking with source metadata
-  -> local embeddings through Foundry Local or Ollama
+  -> local embeddings through Foundry Local
   -> SQLite document/chunk metadata
   -> LanceDB or Qdrant vector rows
   -> query embedding
@@ -143,13 +218,16 @@ The first model pulls require internet access. After Docker images and model vol
 
 ## Foundry Local GPU Notes
 
-Native Foundry runs use Phi-4-mini as the default chat model. Chat prefers the CUDA GPU variant when available, but embeddings use the CPU variant by default so query embedding does not occupy VRAM before Phi-4-mini loads. If the Phi-4-mini GPU variant still fails to load, the app retries the same `phi-4-mini` alias on CPU instead of falling back to a weaker chat model.
+Native Foundry runs use Phi-4-mini as the default chat model. Chat requires the CUDA GPU variant by default, while embeddings use the CPU variant by default so query embedding does not occupy VRAM before Phi-4-mini loads. The app does not automatically fall back to a weaker chat model.
 
 Useful overrides:
 
-- `FOUNDRY_REQUIRE_CHAT_GPU=false`: use the Foundry CPU chat variant directly.
+- `FOUNDRY_REQUIRE_CHAT_GPU=false`: explicitly use the Foundry CPU chat variant of the same `phi-4-mini` alias.
 - `FOUNDRY_REQUIRE_EMBEDDING_GPU=true`: force embedding on GPU.
-- `FOUNDRY_ALLOW_CPU_FALLBACK=false`: fail instead of retrying chat on CPU.
+- `FOUNDRY_ALLOW_CPU_FALLBACK=true`: if GPU loading fails, retry the same `phi-4-mini` alias on CPU.
+- `FOUNDRY_UNLOAD_CHAT_AFTER_USE=false`: keep Phi-4-mini loaded between answers for speed when memory allows.
+- `FOUNDRY_UNLOAD_EMBEDDING_AFTER_USE=true`: unload the embedding model after each embedding call when chat memory is more important than embedding reload speed.
+- `RAG_CHAT_MAX_TOKENS=220`: default concise answer budget; increase only if longer summaries are needed and memory allows.
 - `FOUNDRY_REQUIRE_GPU=false`: legacy switch that disables GPU requirements for both chat and embeddings unless the more specific variables are set.
 
 ## OCR Notes
