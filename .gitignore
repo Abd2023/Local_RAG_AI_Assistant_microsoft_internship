@@ -7,8 +7,17 @@ __pycache__/
 .coverage
 htmlcov/
 data/rag.db
+data/lancedb/
+data/traces/
+data/evaluations/
+# Uploaded local documents are part of the runtime corpus, not source code.
+data/uploads/*
+!data/uploads/.gitkeep
 *.sqlite
 *.sqlite3
 .env
 .env.*
+frontend/node_modules/
+frontend/dist/
+docker-compose.override.yml
 

@@ -47,6 +47,23 @@ def test_chunk_text_splits_oversized_blocks_at_max_words() -> None:
     assert " ".join(chunk.content for chunk in chunks) == text
 
 
+def test_chunk_text_overlaps_normal_markdown_chunk_boundaries() -> None:
+    text = "\n\n".join(
+        [
+            "one two three four five six",
+            "seven eight nine ten eleven twelve",
+            "thirteen fourteen fifteen sixteen seventeen eighteen",
+        ]
+    )
+
+    chunks = chunk_text(text, source_name="guide.md", target_words=10, max_words=32)
+
+    assert len(chunks) == 2
+    assert "six" in chunks[0].content
+    assert "six" in chunks[1].content
+    assert "seven" in chunks[1].content
+
+
 def test_load_document_chunks_reads_supported_files_in_name_order(
     tmp_path: Path,
 ) -> None:

@@ -71,32 +71,94 @@ def test_rank_chunks_by_similarity_rejects_non_positive_top_k() -> None:
         retrieval.rank_chunks_by_similarity([1.0], [], top_k=0)
 
 
-def test_retrieve_top_chunks_uses_injected_embedding_and_database_rows(
+def test_retrieve_top_chunks_uses_injected_embedding_and_vector_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    chunks = [
-        make_stored_chunk(1, "first.md", [0.0, 1.0]),
-        make_stored_chunk(2, "second.md", [1.0, 0.0]),
-    ]
     calls: list[str] = []
-
-    monkeypatch.setattr(retrieval, "fetch_all_chunks", lambda _db_path: chunks)
 
     def fake_generate_embedding(query: str) -> list[float]:
         calls.append(query)
         return [1.0, 0.0]
 
+    def fake_search_vectors(
+        query_embedding: list[float],
+        top_k: int,
+        vector_db_path: Path,
+    ) -> list[dict[str, object]]:
+        assert query_embedding == [1.0, 0.0]
+        assert top_k == 1
+        assert vector_db_path == tmp_path / "lancedb"
+        return [
+            {
+                "sqlite_id": 2,
+                "source_name": "second.md",
+                "chunk_index": 0,
+                "content": "Content from second.md",
+                "similarity": 0.99,
+                "source_path": "C:/docs/second.md",
+                "page_start": None,
+                "page_end": None,
+                "extraction_method": "markdown",
+                "heading": "Second",
+                "chunk_uid": "chunk-2",
+            }
+        ]
+
     monkeypatch.setattr(retrieval, "generate_embedding", fake_generate_embedding)
+    monkeypatch.setattr(retrieval, "search_vectors", fake_search_vectors)
 
     results = retrieval.retrieve_top_chunks(
         "When is the demo?",
         top_k=1,
-        db_path=tmp_path / "unused.db",
+        db_path=tmp_path / "lancedb",
     )
 
     assert calls == ["When is the demo?"]
     assert [result.source_name for result in results] == ["second.md"]
+    assert results[0].retrieval_score == pytest.approx(0.99)
+    assert results[0].source_path == "C:/docs/second.md"
+
+
+def test_retrieve_top_chunks_merges_lexical_candidates(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(retrieval, "generate_embedding", lambda _query: [1.0, 0.0])
+    monkeypatch.setattr(
+        retrieval,
+        "search_vectors",
+        lambda *_args, **_kwargs: [
+            {
+                "sqlite_id": 1,
+                "source_name": "semantic.md",
+                "chunk_index": 0,
+                "content": "A general project overview.",
+                "similarity": 0.0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "search_lexical_chunks",
+        lambda *_args, **_kwargs: [
+            {
+                "sqlite_id": 2,
+                "source_name": "exact.md",
+                "chunk_index": 0,
+                "content": "The exact Turkish terminology is burada.",
+                "similarity": 0.0,
+                "lexical_score": 1.0,
+            }
+        ],
+    )
+
+    results = retrieval.retrieve_top_chunks(
+        "Turkish terminology",
+        top_k=2,
+        db_path=tmp_path / "lancedb",
+    )
+
+    assert [result.source_name for result in results] == ["exact.md", "semantic.md"]
+    assert results[0].lexical_score == 1.0
+    assert results[0].hybrid_score > results[1].hybrid_score
 
 
 def test_retrieve_top_chunks_rejects_empty_query() -> None:
@@ -108,10 +170,15 @@ def test_retrieve_top_chunks_requires_ingested_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(retrieval, "fetch_all_chunks", lambda _db_path: [])
+    monkeypatch.setattr(retrieval, "generate_embedding", lambda _query: [1.0, 0.0])
+
+    def fake_search_vectors(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise retrieval.VectorStoreError("Run `python -m src.ingest` before retrieval.")
+
+    monkeypatch.setattr(retrieval, "search_vectors", fake_search_vectors)
 
     with pytest.raises(retrieval.RetrievalError, match="src.ingest"):
         retrieval.retrieve_top_chunks(
             "When is the demo?",
-            db_path=tmp_path / "empty.db",
+            db_path=tmp_path / "empty-lancedb",
         )
