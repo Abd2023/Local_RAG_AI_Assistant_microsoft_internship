@@ -133,7 +133,11 @@ For a 3–5 minute screen recording in Turkish, use [docs/video_demo_tr.md](docs
 
 ## Screenshots
 
-Screenshots can be added here later. Suggested files are `docs/images/web-ui.png`, `docs/images/uploaded-documents.png`, and `docs/images/grounded-answer.png`.
+### CLI Demo
+
+![Local RAG CLI demo showing grounded answers and source citations](docs/images/cli-demo.png)
+
+More screenshots can be added later, such as `docs/images/uploaded-documents.png` and `docs/images/grounded-answer.png`.
 
 <!-- Example:
 ![Local RAG browser interface](docs/images/web-ui.png)
